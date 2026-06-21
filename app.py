@@ -203,6 +203,12 @@ _RANGE_BUTTONS = dict(
 )
 
 
+def _hex_rgba(hex_color: str, alpha: float = 0.08) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def _fig(**kw) -> go.Figure:
     layout = {**_BASE, **kw}
     return go.Figure(layout=go.Layout(**layout))
@@ -215,7 +221,7 @@ def line_chart(series: pd.Series, title: str, units: str,
     fig.add_trace(go.Scatter(
         x=series.index, y=series.values, mode="lines",
         line=dict(color=color, width=1.8),
-        fill="tozeroy", fillcolor=f"{color}14",
+        fill="tozeroy", fillcolor=_hex_rgba(color, 0.08),
         hovertemplate="%{y:.3f}<extra></extra>",
     ))
     if hlines:
@@ -841,7 +847,7 @@ with tab_crypto:
                 hist_df = pd.DataFrame(fg["history"])
                 hist_df["date"] = pd.to_datetime(hist_df["date"], unit="s")
                 hist_df = hist_df.sort_values("date")
-                fig_fgh = _fig(title="Fear & Greed — 30D History", height=175, range_selector=False)
+                fig_fgh = _fig(title="Fear & Greed — 30D History", height=175)
                 fig_fgh.add_trace(go.Bar(
                     x=hist_df["date"], y=hist_df["value"],
                     marker_color=[
