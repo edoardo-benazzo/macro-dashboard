@@ -16,7 +16,7 @@ from fredapi import Fred
 # FRED
 # ----------------------------------------------------------------------------
 
-@st.cache_data(ttl=60 * 60 * 6)
+@st.cache_data(ttl=60 * 15)   # 15-min — picks up macro releases within 15min of FRED updating
 def get_fred_series(series_id: str, api_key: str, start: str = "2000-01-01") -> pd.Series:
     """Fetch a single FRED series as a pandas Series indexed by date."""
     fred = Fred(api_key=api_key)
@@ -30,7 +30,7 @@ def yoy_pct_change(series: pd.Series) -> pd.Series:
     return series.pct_change(periods=12) * 100
 
 
-@st.cache_data(ttl=60 * 60 * 6)
+@st.cache_data(ttl=60 * 15)
 def load_all_fred(fred_config: dict, api_key: str, start: str) -> dict:
     """
     Loop through FRED_SERIES from config.py and return a dict of
