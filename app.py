@@ -884,7 +884,7 @@ with tab_macro:
                           help="FFR minus Core PCE — true tightness gauge")
             if core_pce_l: c3.metric("Core PCE (Fed target)", f"{core_pce_l:.2f}%")
             col_a,col_b=st.columns(2)
-            if ffr:       chart_col(col_a,ffr.dropna(),"Fed Funds Rate","%")
+            if ffr is not None:       chart_col(col_a,ffr.dropna(),"Fed Funds Rate","%")
             if not real_ffr.empty:
                 chart_col(col_b,real_ffr.dropna(),"Real Fed Funds Rate","%",
                           hlines=[{"y":0,"color":"#4A5568","label":"Neutral"}])
@@ -903,10 +903,10 @@ with tab_macro:
             if sp3 is not None: c2.metric("3m10y Spread",f"{sp3:.2f}%",yield_curve_status(sp3)["label"],
                                            help="Fed's preferred recession indicator")
             col_a,col_b=st.columns(2)
-            if y2 and y10:
+            if y2 is not None and y10 is not None:
                 chart_col(col_a,(y10-y2).dropna(),"2s10s Spread","%",
                           hlines=[{"y":0,"color":"#FF4757","label":"Inversion"}])
-            if y3m and y10:
+            if y3m is not None and y10 is not None:
                 chart_col(col_b,(y10-y3m).dropna(),"3m10y Spread","%",
                           hlines=[{"y":0,"color":"#FF4757","label":"Inversion"}])
             if any(s is not None for s in [y3m,y2,y10,y30]):
@@ -914,8 +914,8 @@ with tab_macro:
                                          "US Treasury Yield Curve — All Tenors","%")
                 st.plotly_chart(fig_yc,use_container_width=True)
             col_a,col_b=st.columns(2)
-            if y2:  chart_col(col_a,y2.dropna(), "2Y Treasury","%","2y_yield")
-            if y10: chart_col(col_b,y10.dropna(),"10Y Treasury","%","10y_yield")
+            if y2 is not None:  chart_col(col_a,y2.dropna(), "2Y Treasury","%","2y_yield")
+            if y10 is not None: chart_col(col_b,y10.dropna(),"10Y Treasury","%","10y_yield")
 
             sect("Real Yields & Inflation Expectations",
                  "Real yields (TIPS) strip out inflation and drive risk-asset valuations. "
@@ -925,9 +925,9 @@ with tab_macro:
             if _latest("real_10y"): c1.metric("10Y Real (TIPS)",f"{_latest('real_10y'):.2f}%")
             if _latest("breakeven_10y"): c2.metric("10Y Breakeven",f"{_latest('breakeven_10y'):.2f}%")
             col_a,col_b=st.columns(2)
-            if r10: chart_col(col_a,r10.dropna(),"10Y TIPS Real Yield","%",
+            if r10 is not None: chart_col(col_a,r10.dropna(),"10Y TIPS Real Yield","%",
                               hlines=[{"y":0,"color":"#4A5568","label":"Zero"}])
-            if be:  chart_col(col_b,be.dropna(),"10Y Breakeven Inflation","%",
+            if be is not None:  chart_col(col_b,be.dropna(),"10Y Breakeven Inflation","%",
                               hlines=[{"y":2.0,"color":"#FFA502","dash":"dot","label":"2%"}])
 
             sect("Inflation — CPI, PCE & PPI")
@@ -946,9 +946,9 @@ with tab_macro:
                               annotation_text="2%",annotation_font_size=9,annotation_font_color="#8896A8")
             st.plotly_chart(fig_inf,use_container_width=True)
             col_a,col_b=st.columns(2)
-            if pce:  chart_col(col_a,pce.dropna(),"PCE Inflation YoY","%",
+            if pce is not None:  chart_col(col_a,pce.dropna(),"PCE Inflation YoY","%",
                                hlines=[{"y":2.0,"color":"#FFA502","label":"2%"}])
-            if ppi:  chart_col(col_b,ppi.dropna(),"PPI YoY %","%")
+            if ppi is not None:  chart_col(col_b,ppi.dropna(),"PPI YoY %","%")
             st.caption("Core PCE is the Fed's primary target. PPI typically leads CPI by 3-6 months.")
             zscore_pill("core_pce_yoy")
 
@@ -961,7 +961,8 @@ with tab_macro:
                 c1.metric("Unemployment",f"{_latest('unemployment'):.2f}%",f"{tr:+.2f}pp vs 3m" if tr else None)
             if nfp is not None and not nfp.dropna().empty:
                 mom=nfp.dropna().diff().iloc[-1]
-                c2.metric("NFP (k)",f"{nfp.dropna().iloc[-1]:,.0f}",f"{mom:+,.0f} MoM")
+                c2.metric("NFP (k)",f"{nfp.dropna().iloc[-1]:,.0f}",
+                          f"{mom:+,.0f} MoM" if pd.notna(mom) else None)
             if _latest("initial_claims"):
                 tr2=series_trend(claims,4)
                 c3.metric("Init. Claims",f"{_latest('initial_claims'):,.0f}",f"{tr2:+,.0f} vs 4wk" if tr2 else None)
@@ -970,8 +971,8 @@ with tab_macro:
             if sahm["triggered"]:
                 st.error("🔴 **Sahm Rule triggered** — early recession signal.",icon="🚨")
             col_a,col_b=st.columns(2)
-            if unemp: chart_col(col_a,unemp.dropna(),"Unemployment Rate","%")
-            if claims: chart_col(col_b,claims.dropna(),"Initial Claims","persons",
+            if unemp is not None: chart_col(col_a,unemp.dropna(),"Unemployment Rate","%")
+            if claims is not None: chart_col(col_b,claims.dropna(),"Initial Claims","persons",
                                  hlines=[{"y":300000,"color":"#FFA502","label":"~300k elevated"}])
             if sahm["series"] is not None:
                 fig_sahm=line_chart(sahm["series"].dropna(),"Sahm Rule Indicator","pp",
@@ -992,12 +993,12 @@ with tab_macro:
                     col.metric(lbl,fmt.format(v),f"{tr:+.2f} vs 3m" if tr else None)
             col_a,col_b=st.columns(2)
             rs=_s("retail_sales_yoy"); hs=_s("housing_starts")
-            if rs: chart_col(col_a,rs.dropna(),"Retail Sales YoY","%",hlines=[{"y":0,"color":"#4A5568","label":"Zero"}])
-            if hs: chart_col(col_b,hs.dropna(),"Housing Starts","k")
+            if rs is not None: chart_col(col_a,rs.dropna(),"Retail Sales YoY","%",hlines=[{"y":0,"color":"#4A5568","label":"Zero"}])
+            if hs is not None: chart_col(col_b,hs.dropna(),"Housing Starts","k")
             col_a,col_b=st.columns(2)
             se=_s("consumer_sentiment"); m2=_s("m2_yoy")
-            if se: chart_col(col_a,se.dropna(),"UMich Consumer Sentiment","index")
-            if m2: chart_col(col_b,m2.dropna(),"M2 Money Supply YoY","%",
+            if se is not None: chart_col(col_a,se.dropna(),"UMich Consumer Sentiment","index")
+            if m2 is not None: chart_col(col_b,m2.dropna(),"M2 Money Supply YoY","%",
                              hlines=[{"y":0,"color":"#FF4757","label":"Contraction"}])
 
             sect("Growth (CFNAI) & Credit Spreads")
@@ -1011,10 +1012,10 @@ with tab_macro:
             if cst["status"] in ("elevated","crisis"):
                 st.warning(f"{cst['label']}",icon="📉")
             col_a,col_b=st.columns(2)
-            if cfnai: chart_col(col_a,cfnai.dropna(),"CFNAI","index",
+            if cfnai is not None: chart_col(col_a,cfnai.dropna(),"CFNAI","index",
                                 hlines=[{"y":0,"color":"#4A5568","label":"Trend"},
                                         {"y":-0.7,"color":"#FF4757","dash":"dot","label":"Recession risk"}])
-            if hy:    chart_col(col_b,hy.dropna(),"HY Credit Spread (OAS)","%",
+            if hy is not None:    chart_col(col_b,hy.dropna(),"HY Credit Spread (OAS)","%",
                                 hlines=[{"y":5,"color":"#FFA502","label":"Elevated"},
                                         {"y":8,"color":"#FF4757","label":"Crisis"}])
 
@@ -1027,8 +1028,8 @@ with tab_macro:
             if ecb_l:    c1.metric("ECB Deposit Rate",f"{ecb_l:.2f}%")
             if eu_10y_l: c2.metric("Euro Area 10Y",   f"{eu_10y_l:.2f}%")
             col_a,col_b=st.columns(2)
-            if ecb_rate: chart_col(col_a,ecb_rate.dropna(),"ECB Deposit Rate","%")
-            if eu_10y:   chart_col(col_b,eu_10y.dropna(),"Euro Area 10Y Yield","%","eu_10y_yield")
+            if ecb_rate is not None: chart_col(col_a,ecb_rate.dropna(),"ECB Deposit Rate","%")
+            if eu_10y is not None:   chart_col(col_b,eu_10y.dropna(),"Euro Area 10Y Yield","%","eu_10y_yield")
 
             sect("Sovereign Yields & BTP-Bund Spread",
                  "BTP-Bund = Italy 10Y minus Germany 10Y in bps. The primary EU fragmentation risk gauge.")
@@ -1071,11 +1072,11 @@ with tab_macro:
                 c2.metric("EU Unemployment",f"{eu_u_l:.2f}%",f"{tr:+.2f}pp vs 3m" if tr else None)
             if _latest("eur_usd"): c3.metric("EUR/USD",f"{_latest('eur_usd'):.4f}")
             col_a,col_b=st.columns(2)
-            if eu_hicp:
+            if eu_hicp is not None:
                 fig_hicp=line_chart(eu_hicp.dropna(),"EU HICP YoY %","%",
                                     hlines=[{"y":2.0,"color":"#FFA502","label":"2% ECB target"}])
                 with col_a: st.plotly_chart(fig_hicp,use_container_width=True)
-            if eur: chart_col(col_b,eur.dropna(),"EUR/USD","USD per EUR","eur_usd")
+            if eur is not None: chart_col(col_b,eur.dropna(),"EUR/USD","USD per EUR","eur_usd")
             eu_reg2=classify_eu_macro_regime(eu_hicp_l,eu_u_l)
             if eu_reg2["regime"]:
                 st.markdown(f"**EU Regime: {eu_reg2['label']}** — {eu_reg2['description']}")
@@ -1088,8 +1089,8 @@ with tab_macro:
             if _latest("boe_rate"):    c1.metric("BoE Base Rate",f"{_latest('boe_rate'):.2f}%")
             if _latest("uk_10y_yield"):c2.metric("UK 10Y Gilt",  f"{_latest('uk_10y_yield'):.2f}%")
             col_a,col_b=st.columns(2)
-            if boe:  chart_col(col_a,boe.dropna(), "BoE Base Rate","%")
-            if uk10: chart_col(col_b,uk10.dropna(),"UK 10Y Gilt Yield","%","uk_10y_yield")
+            if boe is not None:  chart_col(col_a,boe.dropna(), "BoE Base Rate","%")
+            if uk10 is not None: chart_col(col_b,uk10.dropna(),"UK 10Y Gilt Yield","%","uk_10y_yield")
 
             sect("UK Inflation & Labor")
             uk_cpi=_s("uk_cpi_yoy"); uk_u=_s("uk_unemployment")
@@ -1101,9 +1102,9 @@ with tab_macro:
                 tr=series_trend(uk_u,3)
                 c2.metric("UK Unemployment",f"{_latest('uk_unemployment'):.2f}%",f"{tr:+.2f}pp vs 3m" if tr else None)
             col_a,col_b=st.columns(2)
-            if uk_cpi: chart_col(col_a,uk_cpi.dropna(),"UK CPI YoY %","%",
+            if uk_cpi is not None: chart_col(col_a,uk_cpi.dropna(),"UK CPI YoY %","%",
                                  hlines=[{"y":2.0,"color":"#FFA502","label":"2%"}])
-            if uk_u:   chart_col(col_b,uk_u.dropna(),"UK Unemployment","%")
+            if uk_u is not None:   chart_col(col_b,uk_u.dropna(),"UK Unemployment","%")
 
             sect("3-Way Yield Comparison — US / Germany / UK")
             fig_3w=multi_line_chart({"US 10Y":_s("10y_yield"),
