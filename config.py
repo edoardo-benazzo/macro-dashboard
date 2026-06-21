@@ -177,6 +177,13 @@ TRADINGVIEW_SYMBOLS = {
 }
 
 
+# ── MicroStrategy / Strategy Inc BTC holdings ────────────────────────────────
+# Update this from their latest 8-K or press release at strategy.com/bitcoin-tracker
+# Last confirmed from public disclosure: Q2 2025 (≈580,000 BTC)
+MSTR_BTC_HOLDINGS      = 580_000
+MSTR_BTC_HOLDINGS_DATE = "Q2-2025 (update from latest 8-K)"
+
+
 def tradingview_url(symbol_key: str) -> str:
     """
     Build a TradingView chart URL for a given internal ticker/series key.
