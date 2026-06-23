@@ -5,6 +5,7 @@ No paid APIs, no scraping — pure RSS only.
 
 import concurrent.futures
 import email.utils
+import hashlib
 import html
 import re
 import xml.etree.ElementTree as ET
@@ -12,6 +13,27 @@ from datetime import datetime, timezone
 
 import requests
 import streamlit as st
+
+# ── Source credibility tier ───────────────────────────────────────────────────
+# 1 = wire/institutional  2 = quality press  3 = commentary/general
+
+_SOURCE_TIER: dict[str, int] = {
+    "REUTERS":     1,
+    "AP":          1,
+    "FED":         1,
+    "ECB":         1,
+    "BBC":         2,
+    "BBC WORLD":   2,
+    "DW":          2,
+    "EURACTIV":    2,
+    "AL JAZEERA":  3,
+    "FORBES":      3,
+    "TECHCRUNCH":  3,
+    "THE VERGE":   3,
+}
+
+# Colour for source label — tier 1 = bright, tier 2 = mid-grey, tier 3 = dim
+SOURCE_TIER_COLOR: dict[int, str] = {1: "#E2E8F0", 2: "#8BA0B8", 3: "#4A607A"}
 
 # ── Feed definitions ──────────────────────────────────────────────────────────
 
@@ -111,11 +133,114 @@ _CAT_RULES = [
 
 
 def _classify(title: str, desc: str, default: str) -> str:
-    text = (title + " " + desc).lower()
+    # Pad with spaces so space-wrapped keywords match at start/end of text
+    text = " " + (title + " " + desc).lower() + " "
     for category, keywords in _CAT_RULES:
         if any(kw in text for kw in keywords):
             return category
     return default
+
+
+# ── Importance scoring (1 LOW · 2 MEDIUM · 3 HIGH) ───────────────────────────
+
+_HIGH_KW = [
+    "fomc", "fed decision", "rate hike", "rate cut", "ecb decision",
+    "ecb rate", "ecb meeting", "fed meeting", " cpi ", "inflation print",
+    " nfp ", "nonfarm payroll", " gdp ",
+    "recession", "default", "sanctions", "war escalation", "nuclear",
+    "financial crisis", "bank failure", "emergency", "central bank intervention",
+    "yield curve", "debt ceiling", "quantitative easing", "quantitative tightening",
+    " qe ", " qt ", "fed chair", "ecb president", " g7 ", " g20 ", " opec ",
+    "oil embargo", "tariff announcement", "trade war", "election result",
+    "geopolitical crisis", "market crash", "circuit breaker",
+]
+
+_MEDIUM_KW = [
+    " pmi ", "unemployment", "retail sales", "trade balance",
+    "earnings beat", "earnings miss", " ipo ", "merger", "acquisition",
+    "interest rate", "bond yield", "dollar index", "commodity", "equity",
+    "geopolitical tension", "protest", "strike", "policy change",
+    "budget", "fiscal", "treasury", " imf ", "world bank", " wto ", "brics",
+]
+
+
+def _importance_score(title: str, desc: str = "") -> int:
+    text = " " + (title + " " + desc).lower() + " "
+    if any(kw in text for kw in _HIGH_KW):
+        return 3
+    if any(kw in text for kw in _MEDIUM_KW):
+        return 2
+    return 1
+
+
+# ── Market impact tags ────────────────────────────────────────────────────────
+
+_IMPACT_RULES: list[tuple[list[str], str]] = [
+    # ECB-specific rules checked BEFORE generic rate cut/hike to avoid misclassification
+    (["ecb hikes", "ecb raises", "ecb rate hike", "ecb increases rates"],
+     "EUR ↑ · EU Bonds ↓ · EU Equities ↓"),
+    (["ecb cuts", "ecb lowers", "ecb rate cut", "ecb reduces rates"],
+     "EUR ↓ · EU Bonds ↑ · EU Equities ↑"),
+    # Generic central bank rules
+    (["rate cut", "rates cut", "cut rates", "lower rates", "dovish", "pivots",
+      "rate reduction", "easing", "accommodative", "slashes rates", "cuts rates"],
+     "USD ↓ · Bonds ↑ · Equities ↑ · Gold ↑"),
+    (["rate hike", "raises rates", "hike rates", "rate increase", "hawkish",
+      "higher for longer", "tightening", "hikes by", "raises by"],
+     "USD ↑ · Bonds ↓ · Equities ↓ · Gold ↓"),
+    (["inflation surges", "inflation beats", "inflation above", "cpi above", "hot cpi",
+      "hotter than expected", "prices rose more", "inflation accelerates", "inflation jumps"],
+     "USD ↑ · Bonds ↓ · Gold ↑ · Rate hike risk ↑"),
+    (["inflation falls", "inflation cools", "cpi below", "disinflation",
+      "inflation slows", "cool cpi", "cooler than expected", "inflation eases"],
+     "USD ↓ · Bonds ↑ · Equities ↑ · Gold ↓"),
+    (["jobs beat", "nfp beat", "payroll beat", "strong jobs", "employment surges",
+      "jobs above", "payrolls above", "hiring surges"],
+     "USD ↑ · Bonds ↓ · Equities mixed"),
+    (["jobs miss", "weak jobs", "payroll miss", "unemployment rises",
+      "layoffs surge", "jobs below expectations"],
+     "USD ↓ · Bonds ↑ · Recession risk ↑"),
+    (["gdp beats", "gdp above", "economy grows faster", "strong gdp",
+      "economic expansion", "gdp growth accelerates"],
+     "USD ↑ · Equities ↑ · Bonds ↓"),
+    (["gdp shrinks", "gdp contracts", "recession", "economic contraction",
+      "economy contracts", "gdp falls"],
+     "USD ↓ · Bonds ↑ · Equities ↓ · Gold ↑"),
+    (["opec cut", "oil sanctions", "oil embargo", "production cut",
+      "oil supply cut", "opec+ cut"],
+     "Oil ↑ · Airlines ↓ · EM ↓ · Inflation ↑"),
+    (["opec raises output", "oil supply increase", "production increase",
+      "oil output rises", "opec boosts"],
+     "Oil ↓ · Airlines ↑ · Inflation ↓"),
+    (["war escalation", "conflict escalates", "military strikes", "invasion",
+      "airstrikes", "nuclear threat", "troops advance"],
+     "Gold ↑ · Oil ↑ · Risk assets ↓ · USD ↑"),
+    (["ceasefire", "peace deal", "peace talks", "diplomatic agreement",
+      "de-escalation", "truce announced"],
+     "Risk assets ↑ · Oil ↓ · Gold ↓"),
+    # Trade deal checked BEFORE tariff to avoid false match on "deal that removes tariffs"
+    (["trade deal", "tariff removal", "trade agreement", "tariffs lifted",
+      "trade truce"],
+     "Risk assets ↑ · EM ↑ · USD ↓"),
+    (["new tariffs", "tariffs announced", "tariff hike", "imposes tariffs",
+      "trade war", "trade conflict", "tariff escalation"],
+     "USD ↑ · EM ↓ · Supply chain risk ↑"),
+    (["bank failure", "bank collapse", "bank runs", "credit crisis",
+      "banking crisis", "bank default"],
+     "Financials ↓ · Bonds ↑ · Gold ↑"),
+    (["earnings beat", "profits beat", "revenue beat", "earnings above"],
+     "Equities ↑ · Sector ↑"),
+    (["earnings miss", "profits miss", "revenue miss", "earnings below"],
+     "Equities ↓ · Sector ↓"),
+]
+
+
+def _market_impact(title: str, desc: str = "") -> str | None:
+    text = " " + (title + " " + desc).lower() + " "
+    for triggers, impact in _IMPACT_RULES:
+        if any(kw in text for kw in triggers):
+            return impact
+    return None
 
 
 # ── Timestamps ────────────────────────────────────────────────────────────────
@@ -147,8 +272,7 @@ def _parse_date(date_str: str) -> datetime:
     except Exception:
         pass
     try:
-        clean = date_str.strip().replace("Z", "+00:00")
-        return datetime.fromisoformat(clean)
+        return datetime.fromisoformat(date_str.strip().replace("Z", "+00:00"))
     except Exception:
         return datetime.now(timezone.utc)
 
@@ -161,10 +285,67 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# ── Deduplication ─────────────────────────────────────────────────────────────
+
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "in", "on", "at",
+    "to", "of", "and", "or", "for", "with", "s", "its", "by", "as",
+})
+
+
+def _word_set(title: str) -> frozenset[str]:
+    words = re.findall(r"\b\w+\b", title.lower())
+    return frozenset(w for w in words if w not in _STOP_WORDS and len(w) > 1)
+
+
+def _deduplicate(articles: list[dict]) -> list[dict]:
+    """Word-overlap dedup — keeps highest-tier source version of each story."""
+    # Best tier first, then newest within same tier
+    articles = sorted(
+        articles,
+        key=lambda a: (_SOURCE_TIER.get(a["source"], 4), -a["pub"].timestamp()),
+    )
+
+    kept: list[dict] = []
+    counts: dict[int, int] = {}
+
+    for art in articles:
+        ws = _word_set(art["title"])
+        dupe_of = None
+        for idx, kept_art in enumerate(kept):
+            if abs((art["pub"] - kept_art["pub"]).total_seconds()) > 10_800:
+                continue
+            ks = _word_set(kept_art["title"])
+            shorter = min(len(ws), len(ks))
+            if shorter == 0:
+                continue
+            if len(ws & ks) / shorter >= 0.60:
+                dupe_of = idx
+                break
+        if dupe_of is not None:
+            counts[dupe_of] = counts.get(dupe_of, 1) + 1
+        else:
+            kept.append(art)
+            counts[len(kept) - 1] = 1
+
+    for idx, art in enumerate(kept):
+        art["source_count"] = counts.get(idx, 1)
+
+    return kept
+
+
+# ── Article identity ──────────────────────────────────────────────────────────
+
+def article_id(art: dict) -> str:
+    """Stable short hash for session-state keying."""
+    key = (art.get("title", "") + art.get("source", "")).encode()
+    return hashlib.md5(key).hexdigest()[:10]
+
+
 # ── Feed parsing ──────────────────────────────────────────────────────────────
 
 _ATOM_NS = "http://www.w3.org/2005/Atom"
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; MacroDashboard/3.0; educational)"}
+_HEADERS  = {"User-Agent": "Mozilla/5.0 (compatible; MacroDashboard/3.0; educational)"}
 
 
 def _make_item(title: str, link: str, pub: datetime,
@@ -175,14 +356,17 @@ def _make_item(title: str, link: str, pub: datetime,
         parts = title.rsplit(" - ", 1)
         if len(parts) == 2 and len(parts[1]) < 50:
             title = parts[0].strip()
-    category = _classify(title, desc, default_cat)
     return {
-        "title":    title,
-        "link":     link,
-        "pub":      pub,
-        "time_ago": _time_ago(pub),
-        "source":   source,
-        "category": category,
+        "title":         title,
+        "link":          link,
+        "pub":           pub,
+        "time_ago":      _time_ago(pub),
+        "source":        source,
+        "source_tier":   _SOURCE_TIER.get(source, 3),
+        "category":      _classify(title, desc, default_cat),
+        "importance":    _importance_score(title, desc),
+        "market_impact": _market_impact(title, desc),
+        "source_count":  1,
     }
 
 
@@ -192,22 +376,18 @@ def _parse_feed(url: str, source: str, default_category: str,
         resp = requests.get(url, timeout=timeout, headers=_HEADERS)
         resp.raise_for_status()
         content = resp.content
-        # Strip UTF-8 BOM
         if content.startswith(b"\xef\xbb\xbf"):
             content = content[3:]
 
         root = ET.fromstring(content)
-        tag  = root.tag
         items: list[dict] = []
 
-        if tag == f"{{{_ATOM_NS}}}feed":
+        if root.tag == f"{{{_ATOM_NS}}}feed":
             # Atom 1.0 (e.g. The Verge)
             for entry in root.findall(f"{{{_ATOM_NS}}}entry")[:12]:
                 title = _strip_html(entry.findtext(f"{{{_ATOM_NS}}}title", ""))
                 link_el = entry.find(f"{{{_ATOM_NS}}}link")
-                link = ""
-                if link_el is not None:
-                    link = link_el.get("href", "") or link_el.text or ""
+                link = link_el.get("href", "") if link_el is not None else ""
                 pub_str = (entry.findtext(f"{{{_ATOM_NS}}}published") or
                            entry.findtext(f"{{{_ATOM_NS}}}updated") or "")
                 desc = _strip_html(
@@ -216,8 +396,8 @@ def _parse_feed(url: str, source: str, default_category: str,
                 )[:200]
                 pub = _parse_date(pub_str)
                 if title:
-                    items.append(_make_item(title, link, pub, source,
-                                            default_category, url, desc))
+                    items.append(_make_item(title, link, pub,
+                                            source, default_category, url, desc))
         else:
             # RSS 2.0
             channel = root.find("channel") or root
@@ -227,8 +407,8 @@ def _parse_feed(url: str, source: str, default_category: str,
                 pub   = _parse_date(item.findtext("pubDate", ""))
                 desc  = _strip_html(item.findtext("description", ""))[:200]
                 if title:
-                    items.append(_make_item(title, link, pub, source,
-                                            default_category, url, desc))
+                    items.append(_make_item(title, link, pub,
+                                            source, default_category, url, desc))
         return items
     except Exception:
         return []
@@ -238,13 +418,11 @@ def _parse_feed(url: str, source: str, default_category: str,
 
 @st.cache_data(ttl=60 * 15)
 def fetch_all_news() -> list[dict]:
-    """Aggregate news from all RSS sources — sorted newest-first, deduplicated."""
+    """Fetch, deduplicate, score, and sort articles from all 14 RSS feeds."""
     all_items: list[dict] = []
 
     def _fetch(feed: dict) -> list[dict]:
-        return _parse_feed(
-            feed["url"], feed["source"], feed["default_category"]
-        )
+        return _parse_feed(feed["url"], feed["source"], feed["default_category"])
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
         futures = [ex.submit(_fetch, f) for f in FEEDS]
@@ -254,16 +432,13 @@ def fetch_all_news() -> list[dict]:
             except Exception:
                 pass
 
-    # Filter noise, sort newest-first, deduplicate by title slug
+    # Filter noise
     filtered = [a for a in all_items if not _is_noise(a["title"])]
-    filtered.sort(key=lambda x: x["pub"], reverse=True)
 
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for item in filtered:
-        slug = re.sub(r"\W+", "", item["title"].lower())[:60]
-        if slug and slug not in seen:
-            seen.add(slug)
-            unique.append(item)
+    # Word-overlap dedup, keeping best-tier source
+    unique = _deduplicate(filtered)
+
+    # Sort: HIGH first, then MEDIUM, then LOW; newest-first within each tier
+    unique.sort(key=lambda a: (-a["importance"], -a["pub"].timestamp()))
 
     return unique[:120]

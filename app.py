@@ -23,7 +23,7 @@ from data_fetchers import (
     compute_real_fed_funds, compute_btp_bund_spread, btp_bund_status,
     compute_recession_probability, series_trend,
 )
-from news_fetcher import fetch_all_news
+from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR
 from crypto_fetchers import (
     fetch_btc_coingecko, fetch_crypto_global, fetch_fear_greed,
     fetch_btc_hashrate, fetch_btc_history,
@@ -318,9 +318,9 @@ def zscore_pill(key: str):
         st.caption(f"Z-score vs history: **{z['zscore']:+.1f}sigma** — {zscore_label(z['zscore'])}")
 
 
-# ── News rendering helper ──────────────────────────────────────────────────────
+# ── News rendering helpers ─────────────────────────────────────────────────────
 
-# border colour, badge bg/text/border for each category
+# (border, badge-bg, badge-text, badge-border) per category
 _NEWS_STYLE: dict[str, tuple[str, str, str, str]] = {
     "CENTRAL BANKS": ("#2979FF", "rgba(41,121,255,.18)",  "#6FA8FF", "rgba(41,121,255,.4)"),
     "MACRO":         ("#00C896", "rgba(0,200,150,.15)",   "#00C896", "rgba(0,200,150,.4)"),
@@ -330,47 +330,183 @@ _NEWS_STYLE: dict[str, tuple[str, str, str, str]] = {
 }
 _NEWS_FALLBACK = ("#1A6EFF", "rgba(26,110,255,.15)", "#6FA8FF", "rgba(26,110,255,.4)")
 
+# TradingView link patterns (most specific first to win overlap tiebreaks)
+import re as _re
+_TV_LINK_STYLE = (
+    "color:#5A9FFF;text-decoration:underline;text-underline-offset:2px;"
+    "text-decoration-thickness:1px"
+)
+_TV_PATTERNS = [
+    (_re.compile(r"\bS&P\s*500\b|\bS&P500\b", _re.I), "https://www.tradingview.com/chart/?symbol=SP:SPX"),
+    (_re.compile(r"\bEuro\s+Stoxx\b", _re.I),          "https://www.tradingview.com/chart/?symbol=INDEX:STOXX50E"),
+    (_re.compile(r"\bDow\s+Jones\b", _re.I),           "https://www.tradingview.com/chart/?symbol=DJ:DJI"),
+    (_re.compile(r"\bDollar\s+[Ii]ndex\b|\bDXY\b|\bDollar\b", _re.I), "https://www.tradingview.com/chart/?symbol=TVC:DXY"),
+    (_re.compile(r"\bEUR/USD\b|\beuro\b", _re.I),      "https://www.tradingview.com/chart/?symbol=FX:EURUSD"),
+    (_re.compile(r"\b(?:10[- ]year|US\s*10Y)\s+yields?\b|\btreasury\s+yields?\b", _re.I),
+                                                        "https://www.tradingview.com/chart/?symbol=TVC:US10Y"),
+    (_re.compile(r"\b(?:2[- ]year|US\s*2Y)\s+yield\b", _re.I), "https://www.tradingview.com/chart/?symbol=TVC:US02Y"),
+    (_re.compile(r"\bcrude\s+oil\b", _re.I),           "https://www.tradingview.com/chart/?symbol=NYMEX:CL1!"),
+    (_re.compile(r"\bNasdaq\b", _re.I),                "https://www.tradingview.com/chart/?symbol=NASDAQ:IXIC"),
+    (_re.compile(r"\bGold\b", _re.I),                  "https://www.tradingview.com/chart/?symbol=COMEX:GC1!"),
+    (_re.compile(r"\bOil\b", _re.I),                   "https://www.tradingview.com/chart/?symbol=NYMEX:CL1!"),
+    (_re.compile(r"\bVIX\b"),                          "https://www.tradingview.com/chart/?symbol=CBOE:VIX"),
+    (_re.compile(r"\bBitcoin\b|\bBTC\b"),              "https://www.tradingview.com/chart/?symbol=BITSTAMP:BTCUSD"),
+    (_re.compile(r"\bDAX\b"),                          "https://www.tradingview.com/chart/?symbol=XETR:DAX"),
+    (_re.compile(r"\bFTSE\b", _re.I),                 "https://www.tradingview.com/chart/?symbol=FOREXCOM:UK100"),
+]
+
+
+def _add_tv_links(text: str) -> str:
+    """Replace known financial terms in plain text with TradingView links."""
+    # Collect all non-overlapping matches across all patterns
+    matches: list[tuple[int, int, str, str]] = []
+    for pattern, url in _TV_PATTERNS:
+        for m in pattern.finditer(text):
+            matches.append((m.start(), m.end(), m.group(0), url))
+
+    matches.sort(key=lambda x: x[0])
+
+    # Remove overlaps (keep first match at each position)
+    filtered: list[tuple[int, int, str, str]] = []
+    last_end = 0
+    for start, end, matched, url in matches:
+        if start >= last_end:
+            filtered.append((start, end, matched, url))
+            last_end = end
+
+    parts: list[str] = []
+    pos = 0
+    for start, end, matched, url in filtered:
+        parts.append(text[pos:start])
+        parts.append(
+            f'<a href="{url}" target="_blank" style="{_TV_LINK_STYLE}">{matched}</a>'
+        )
+        pos = end
+    parts.append(text[pos:])
+    return "".join(parts)
+
 
 def _render_articles(articles: list):
     if not articles:
         st.caption("No articles in this category yet — try refreshing.")
         return
+
+    read_set: set = st.session_state.get("news_read", set())
+
     for art in articles:
         cat      = art.get("category", "MACRO")
         src      = art.get("source", "")
         time_ago = art.get("time_ago", "")
         link     = art.get("link", "")
-        ttl      = art["title"].replace("<", "&lt;").replace(">", "&gt;")
+        imp      = art.get("importance", 1)
+        mi       = art.get("market_impact")
+        sc       = art.get("source_count", 1)
+        tier     = art.get("source_tier", 3)
+        art_id   = article_id(art)
+        is_read  = art_id in read_set
 
+        # Category badge
         border, bg, text_c, border_c = _NEWS_STYLE.get(cat, _NEWS_FALLBACK)
-
-        badge = (
+        cat_badge = (
             f'<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
             f'font-size:9px;font-weight:800;letter-spacing:0.7px;'
             f'background:{bg};color:{text_c};border:1px solid {border_c}">{cat}</span>'
         )
-        headline = (
-            f'<a href="{link}" target="_blank" style="text-decoration:none">'
-            f'<div style="font-size:13px;font-weight:600;color:#E2E8F0;line-height:1.45;'
-            f'margin-top:5px">{ttl}</div></a>'
-            if link else
-            f'<div style="font-size:13px;font-weight:600;color:#E2E8F0;'
-            f'line-height:1.45;margin-top:5px">{ttl}</div>'
+
+        # Importance badge
+        if imp == 3:
+            imp_badge = (
+                '<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
+                'font-size:9px;font-weight:800;letter-spacing:0.6px;'
+                'background:rgba(41,121,255,.22);color:#6FA8FF;'
+                'border:1px solid rgba(41,121,255,.45)">HIGH IMPACT</span>'
+            )
+        elif imp == 2:
+            imp_badge = (
+                '<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
+                'font-size:9px;font-weight:700;letter-spacing:0.5px;'
+                'background:rgba(100,116,139,.12);color:#8BA0B8;'
+                'border:1px solid rgba(100,116,139,.25)">MEDIUM</span>'
+            )
+        else:
+            imp_badge = ""
+
+        # Source label with tier colour
+        src_color = SOURCE_TIER_COLOR.get(tier, "#4A607A")
+
+        # Read badge
+        read_badge = (
+            '<span style="font-size:8px;font-weight:700;color:#374A5E;'
+            'background:#0D1521;padding:1px 5px;border-radius:3px;'
+            'border:1px solid #1A2540">READ</span>' if is_read else ""
         )
 
-        st.markdown(f"""
-        <div style="background:#0A1628;border:1px solid #1A2540;
+        # Sources badge (only when deduplicated across 2+ outlets)
+        sources_badge = (
+            f'<span style="font-size:9px;color:#374A5E;background:#0D1521;'
+            f'padding:1px 6px;border-radius:3px;border:1px solid #1A2540">'
+            f'{sc} sources</span>'
+        ) if sc >= 2 else ""
+
+        # Market impact row with TV links
+        mi_html = ""
+        if mi and imp >= 2:
+            mi_linked = _add_tv_links(mi)
+            mi_html = (
+                f'<div style="font-size:10.5px;color:#4A7A9B;margin-top:5px;'
+                f'line-height:1.3;letter-spacing:0.2px">{mi_linked}</div>'
+            )
+
+        # Headline text with TV links
+        raw_title = art["title"].replace("<", "&lt;").replace(">", "&gt;")
+        title_linked = _add_tv_links(raw_title)
+        hl_color = {3: "#E2E8F0", 2: "#C5D0DC"}.get(imp, "#7A8FA8")
+        hl_weight = {3: "700", 2: "600"}.get(imp, "500")
+        hl_size   = {3: "13.5px", 2: "13px"}.get(imp, "12.5px")
+
+        headline_html = (
+            f'<a href="{link}" target="_blank" style="text-decoration:none">'
+            f'<div style="font-size:{hl_size};font-weight:{hl_weight};'
+            f'color:{hl_color};line-height:1.45;margin-top:5px">'
+            f'{title_linked}</div></a>'
+            if link else
+            f'<div style="font-size:{hl_size};font-weight:{hl_weight};'
+            f'color:{hl_color};line-height:1.45;margin-top:5px">'
+            f'{title_linked}</div>'
+        )
+
+        opacity_style = "opacity:0.50;" if is_read else ""
+        card_html = f"""
+        <div style="{opacity_style}background:#0A1628;border:1px solid #1A2540;
                     border-left:3px solid {border};border-radius:0 6px 6px 0;
                     padding:10px 14px;margin:3px 0">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            {badge}
-            <span style="font-size:10px;font-weight:700;color:#4A607A;
-                         letter-spacing:0.5px">{src}</span>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            {cat_badge}
+            {imp_badge}
+            <span style="font-size:10px;font-weight:700;color:{src_color};
+                         letter-spacing:0.4px">{src}</span>
             <span style="color:#2D3E56;font-size:10px">·</span>
             <span style="font-size:10px;color:#2D3E56">{time_ago}</span>
+            <div style="margin-left:auto;display:flex;gap:4px;align-items:center">
+              {sources_badge}{read_badge}
+            </div>
           </div>
-          {headline}
-        </div>""", unsafe_allow_html=True)
+          {headline_html}
+          {mi_html}
+        </div>"""
+
+        col_card, col_btn = st.columns([17, 1])
+        with col_card:
+            st.markdown(card_html, unsafe_allow_html=True)
+        with col_btn:
+            btn_lbl  = "↩" if is_read else "✓"
+            btn_help = "Mark unread" if is_read else "Mark read"
+            if st.button(btn_lbl, key=f"rd_{art_id}", help=btn_help):
+                if is_read:
+                    st.session_state.news_read.discard(art_id)
+                else:
+                    st.session_state.news_read.add(art_id)
+                st.rerun()
 
 
 # ── Data loading & sidebar ─────────────────────────────────────────────────────
@@ -730,14 +866,19 @@ with tab_cal:
 # MACRO NEWS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Session state for read tracking ──────────────────────────────────────────
+if "news_read" not in st.session_state:
+    st.session_state.news_read = set()
+
 with tab_news:
-    hdr, btn = st.columns([5, 1])
-    with hdr:
+    # ── Header row ────────────────────────────────────────────────────────
+    hdr_col, ref_col = st.columns([5, 1])
+    with hdr_col:
         st.caption(
-            "Fed · ECB · Reuters · BBC · Al Jazeera · AP · Forbes · TechCrunch · "
-            "The Verge · Euractiv · DW  ·  auto-classified  ·  15-min cache"
+            "14 feeds · Fed · ECB · Reuters · BBC · Al Jazeera · AP · Forbes · "
+            "TechCrunch · The Verge · Euractiv · DW · auto-scored · 15-min cache"
         )
-    with btn:
+    with ref_col:
         if st.button("Refresh", key="news_refresh", use_container_width=True):
             fetch_all_news.clear(); st.rerun()
 
@@ -747,37 +888,76 @@ with tab_news:
     if not all_articles:
         _alert("Could not fetch news — check network or try refreshing.", "warning")
     else:
+        # ── Control bar ───────────────────────────────────────────────────
+        f1, f2, f3, f4 = st.columns([3, 4, 2, 2])
+        with f1:
+            imp_filter = st.radio(
+                "Importance",
+                ["High + Medium", "High Only", "All"],
+                horizontal=True, index=0,
+                label_visibility="collapsed",
+                key="news_imp_filter",
+            )
+        with f2:
+            search_q = st.text_input(
+                "Search", placeholder="Search headlines...",
+                label_visibility="collapsed", key="news_search",
+            )
+        with f3:
+            show_unread = st.toggle("Unread only", key="news_unread_toggle")
+        with f4:
+            if st.button("Mark all read", key="news_mark_all",
+                         use_container_width=True):
+                for a in all_articles:
+                    st.session_state.news_read.add(article_id(a))
+                st.rerun()
+
+        # ── Apply filters ─────────────────────────────────────────────────
+        pool = list(all_articles)  # already sorted high→low importance, newest first
+
+        if search_q:
+            sq = search_q.strip().lower()
+            pool = [a for a in pool if sq in a["title"].lower()]
+            n = len(pool)
+            st.caption(f"{n} result{'s' if n != 1 else ''} for \"{search_q}\"")
+
+        if imp_filter == "High Only":
+            pool = [a for a in pool if a.get("importance", 1) == 3]
+        elif imp_filter == "High + Medium":
+            pool = [a for a in pool if a.get("importance", 1) >= 2]
+
+        if show_unread:
+            read_set = st.session_state.news_read
+            pool = [a for a in pool if article_id(a) not in read_set]
+
+        # ── Category tabs ─────────────────────────────────────────────────
         (n_all, n_cb, n_macro, n_geo,
          n_mkt, n_tech) = st.tabs([
-            "All",
-            "Central Banks",
-            "Macro",
-            "Geopolitical",
-            "Markets",
-            "Tech & AI",
+            "All", "Central Banks", "Macro",
+            "Geopolitical", "Markets", "Tech & AI",
         ])
 
         with n_all:
-            _render_articles(all_articles)
+            _render_articles(pool)
 
         with n_cb:
-            _render_articles([a for a in all_articles
+            _render_articles([a for a in pool
                               if a.get("category") == "CENTRAL BANKS"])
 
         with n_macro:
-            _render_articles([a for a in all_articles
+            _render_articles([a for a in pool
                               if a.get("category") == "MACRO"])
 
         with n_geo:
-            _render_articles([a for a in all_articles
+            _render_articles([a for a in pool
                               if a.get("category") == "GEOPOLITICAL"])
 
         with n_mkt:
-            _render_articles([a for a in all_articles
+            _render_articles([a for a in pool
                               if a.get("category") == "MARKETS"])
 
         with n_tech:
-            _render_articles([a for a in all_articles
+            _render_articles([a for a in pool
                               if a.get("category") == "TECH & AI"])
 
 
