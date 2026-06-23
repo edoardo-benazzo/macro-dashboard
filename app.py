@@ -23,7 +23,7 @@ from data_fetchers import (
     compute_real_fed_funds, compute_btp_bund_spread, btp_bund_status,
     compute_recession_probability, series_trend,
 )
-from news_fetcher import fetch_all_macro_news, IMPACT_CATEGORIES
+from news_fetcher import fetch_all_news
 from crypto_fetchers import (
     fetch_btc_coingecko, fetch_crypto_global, fetch_fear_greed,
     fetch_btc_hashrate, fetch_btc_history,
@@ -320,47 +320,56 @@ def zscore_pill(key: str):
 
 # ── News rendering helper ──────────────────────────────────────────────────────
 
-_CAT_COLOR = {"MACRO": "#2979FF", "GEOPOLITICAL": "#FF4757"}
-_TAG_COLOR  = {
-    "hawkish":"#FF4757","dovish":"#00C896","risk_off":"#FFA502",
-    "risk_on":"#00C864","inflation":"#FF6B6B","fed":"#2979FF",
-    "ecb":"#00C896","labor":"#A55EEA","geopolitical":"#FF7088","crypto":"#F7931A",
+# border colour, badge bg/text/border for each category
+_NEWS_STYLE: dict[str, tuple[str, str, str, str]] = {
+    "CENTRAL BANKS": ("#2979FF", "rgba(41,121,255,.18)",  "#6FA8FF", "rgba(41,121,255,.4)"),
+    "MACRO":         ("#00C896", "rgba(0,200,150,.15)",   "#00C896", "rgba(0,200,150,.4)"),
+    "GEOPOLITICAL":  ("#FF4757", "rgba(255,71,87,.15)",   "#FF7088", "rgba(255,71,87,.4)"),
+    "MARKETS":       ("#FFA502", "rgba(255,165,2,.15)",   "#FFA502", "rgba(255,165,2,.4)"),
+    "TECH & AI":     ("#A78BFA", "rgba(167,139,250,.15)", "#A78BFA", "rgba(167,139,250,.4)"),
 }
+_NEWS_FALLBACK = ("#1A6EFF", "rgba(26,110,255,.15)", "#6FA8FF", "rgba(26,110,255,.4)")
 
 
 def _render_articles(articles: list):
     if not articles:
-        st.caption("No articles matching the current filter.")
+        st.caption("No articles in this category yet — try refreshing.")
         return
     for art in articles:
         cat      = art.get("category", "MACRO")
-        cat_lo   = cat.lower()
         src      = art.get("source", "")
         time_ago = art.get("time_ago", "")
-        tags     = art.get("tags", [])
-        border   = _CAT_COLOR.get(cat, "#1A2540")
+        link     = art.get("link", "")
+        ttl      = art["title"].replace("<", "&lt;").replace(">", "&gt;")
 
-        badges_html = "".join(
-            f'<span class="badge badge-{t}">{IMPACT_CATEGORIES[t]["label"]}</span>'
-            for t in tags if t in IMPACT_CATEGORIES
+        border, bg, text_c, border_c = _NEWS_STYLE.get(cat, _NEWS_FALLBACK)
+
+        badge = (
+            f'<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
+            f'font-size:9px;font-weight:800;letter-spacing:0.7px;'
+            f'background:{bg};color:{text_c};border:1px solid {border_c}">{cat}</span>'
         )
-        ttl  = art["title"].replace("<", "&lt;").replace(">", "&gt;")
-        dsc  = art["desc"].replace("<", "&lt;").replace(">", "&gt;")[:200]
-        link = art.get("link", "")
-        link_open  = f'<a href="{link}" target="_blank" style="text-decoration:none">' if link else ""
-        link_close = "</a>" if link else ""
+        headline = (
+            f'<a href="{link}" target="_blank" style="text-decoration:none">'
+            f'<div style="font-size:13px;font-weight:600;color:#E2E8F0;line-height:1.45;'
+            f'margin-top:5px">{ttl}</div></a>'
+            if link else
+            f'<div style="font-size:13px;font-weight:600;color:#E2E8F0;'
+            f'line-height:1.45;margin-top:5px">{ttl}</div>'
+        )
 
         st.markdown(f"""
-        <div class="card" style="border-left-color:{border}">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-            <span class="badge badge-{cat_lo}">{cat}</span>
-            <span style="font-size:10px;font-weight:700;color:#4A607A;letter-spacing:0.5px">{src}</span>
+        <div style="background:#0A1628;border:1px solid #1A2540;
+                    border-left:3px solid {border};border-radius:0 6px 6px 0;
+                    padding:10px 14px;margin:3px 0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            {badge}
+            <span style="font-size:10px;font-weight:700;color:#4A607A;
+                         letter-spacing:0.5px">{src}</span>
             <span style="color:#2D3E56;font-size:10px">·</span>
             <span style="font-size:10px;color:#2D3E56">{time_ago}</span>
-            {badges_html}
           </div>
-          {link_open}<div class="card-title">{ttl}</div>{link_close}
-          <div class="card-sub">{dsc}{'...' if len(art['desc']) > 200 else ''}</div>
+          {headline}
         </div>""", unsafe_allow_html=True)
 
 
@@ -724,49 +733,52 @@ with tab_cal:
 with tab_news:
     hdr, btn = st.columns([5, 1])
     with hdr:
-        st.caption("Reuters · CNBC · MarketWatch · BBC World · The Guardian · auto-classified · 30-min cache")
+        st.caption(
+            "Fed · ECB · Reuters · BBC · Al Jazeera · AP · Forbes · TechCrunch · "
+            "The Verge · Euractiv · DW  ·  auto-classified  ·  15-min cache"
+        )
     with btn:
         if st.button("Refresh", key="news_refresh", use_container_width=True):
-            fetch_all_macro_news.clear(); st.rerun()
+            fetch_all_news.clear(); st.rerun()
 
-    with st.spinner("Fetching news..."):
-        all_articles = fetch_all_macro_news()
+    with st.spinner("Fetching news from 14 feeds..."):
+        all_articles = fetch_all_news()
 
     if not all_articles:
         _alert("Could not fetch news — check network or try refreshing.", "warning")
     else:
-        news_all, news_macro, news_geo = st.tabs(["All", "Macro", "Geopolitical"])
+        (n_all, n_cb, n_macro, n_geo,
+         n_mkt, n_tech) = st.tabs([
+            "All",
+            "Central Banks",
+            "Macro",
+            "Geopolitical",
+            "Markets",
+            "Tech & AI",
+        ])
 
-        with news_all:
-            filter_all = st.multiselect(
-                "Filter by impact", list(IMPACT_CATEGORIES.keys()),
-                format_func=lambda k: IMPACT_CATEGORIES[k]["label"],
-                default=[], placeholder="All impacts",
-                label_visibility="collapsed", key="news_filter_all")
-            arts = [a for a in all_articles if any(t in a["tags"] for t in filter_all)] if filter_all else all_articles
-            _render_articles(arts)
+        with n_all:
+            _render_articles(all_articles)
 
-        with news_macro:
-            macro_arts = [a for a in all_articles if a.get("category") == "MACRO"]
-            filter_m = st.multiselect(
-                "Filter by impact", list(IMPACT_CATEGORIES.keys()),
-                format_func=lambda k: IMPACT_CATEGORIES[k]["label"],
-                default=[], placeholder="All impacts",
-                label_visibility="collapsed", key="news_filter_macro")
-            if filter_m:
-                macro_arts = [a for a in macro_arts if any(t in a["tags"] for t in filter_m)]
-            _render_articles(macro_arts)
+        with n_cb:
+            _render_articles([a for a in all_articles
+                              if a.get("category") == "CENTRAL BANKS"])
 
-        with news_geo:
-            geo_arts = [a for a in all_articles if a.get("category") == "GEOPOLITICAL"]
-            filter_g = st.multiselect(
-                "Filter by impact", list(IMPACT_CATEGORIES.keys()),
-                format_func=lambda k: IMPACT_CATEGORIES[k]["label"],
-                default=[], placeholder="All impacts",
-                label_visibility="collapsed", key="news_filter_geo")
-            if filter_g:
-                geo_arts = [a for a in geo_arts if any(t in a["tags"] for t in filter_g)]
-            _render_articles(geo_arts)
+        with n_macro:
+            _render_articles([a for a in all_articles
+                              if a.get("category") == "MACRO"])
+
+        with n_geo:
+            _render_articles([a for a in all_articles
+                              if a.get("category") == "GEOPOLITICAL"])
+
+        with n_mkt:
+            _render_articles([a for a in all_articles
+                              if a.get("category") == "MARKETS"])
+
+        with n_tech:
+            _render_articles([a for a in all_articles
+                              if a.get("category") == "TECH & AI"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
