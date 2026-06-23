@@ -82,9 +82,14 @@ FEEDS = [
 # ── Noise filter ──────────────────────────────────────────────────────────────
 
 _NOISE_KEYWORDS = [
+    # Financial noise
     "form 4", "sec filing", "insider", "earnings per share",
     "quarterly results", "dividend", "buyback", "price target",
     "analyst rating", "stock split",
+    # Sports / entertainment — not macro news
+    "world cup", "soccer", "nba ", "nfl ", "celebrity",
+    "lifestyle", "ronaldo", "messi", "premier league",
+    "champions league", "super bowl", "wimbledon", "olympics",
 ]
 
 

@@ -388,7 +388,7 @@ def _add_tv_links(text: str) -> str:
 
 def _render_articles(articles: list, tab_key: str = "all"):
     if not articles:
-        st.caption("No articles in this category yet — try refreshing.")
+        st.caption("No articles in this category yet.")
         return
 
     read_set: set = st.session_state.get("news_read", set())
@@ -400,115 +400,102 @@ def _render_articles(articles: list, tab_key: str = "all"):
         link     = art.get("link", "")
         imp      = art.get("importance", 1)
         mi       = art.get("market_impact")
-        sc       = art.get("source_count", 1)
         tier     = art.get("source_tier", 3)
         art_id   = article_id(art)
         is_read  = art_id in read_set
 
-        # Category badge
-        border, bg, text_c, border_c = _NEWS_STYLE.get(cat, _NEWS_FALLBACK)
-        cat_badge = (
-            f'<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
-            f'font-size:9px;font-weight:800;letter-spacing:0.7px;'
-            f'background:{bg};color:{text_c};border:1px solid {border_c}">{cat}</span>'
-        )
+        # Sanitize title — strip ALL HTML tags, normalize whitespace
+        title = _re.sub(r"<[^>]+>", " ", art.get("title", ""))
+        title = _re.sub(r"\s+", " ", title).strip()
 
-        # Importance badge
-        if imp == 3:
-            imp_badge = (
-                '<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
-                'font-size:9px;font-weight:800;letter-spacing:0.6px;'
-                'background:rgba(41,121,255,.22);color:#6FA8FF;'
-                'border:1px solid rgba(41,121,255,.45)">HIGH IMPACT</span>'
-            )
-        elif imp == 2:
-            imp_badge = (
-                '<span style="display:inline-block;padding:2px 7px;border-radius:3px;'
-                'font-size:9px;font-weight:700;letter-spacing:0.5px;'
-                'background:rgba(100,116,139,.12);color:#8BA0B8;'
-                'border:1px solid rgba(100,116,139,.25)">MEDIUM</span>'
-            )
-        else:
-            imp_badge = ""
-
-        # Source label with tier colour
+        # Visual config
+        _border, bg_c, text_c, ring_c = _NEWS_STYLE.get(cat, _NEWS_FALLBACK)
         src_color = SOURCE_TIER_COLOR.get(tier, "#4A607A")
+        imp_label = {3: "HIGH", 2: "MED"}.get(imp, "")
+        dim = "opacity:0.45;" if is_read else ""
 
-        # Read badge
-        read_badge = (
-            '<span style="font-size:8px;font-weight:700;color:#374A5E;'
-            'background:#0D1521;padding:1px 5px;border-radius:3px;'
-            'border:1px solid #1A2540">READ</span>' if is_read else ""
-        )
+        # ── Line 1: [CATEGORY] [HIGH/MED] [SOURCE]    [TIME] [✓] ─────
+        c1, c2, c3, _gap, c4, c5 = st.columns([1.8, 0.75, 1.5, 2.2, 1.3, 0.55])
 
-        # Sources badge (only when deduplicated across 2+ outlets)
-        sources_badge = (
-            f'<span style="font-size:9px;color:#374A5E;background:#0D1521;'
-            f'padding:1px 6px;border-radius:3px;border:1px solid #1A2540">'
-            f'{sc} sources</span>'
-        ) if sc >= 2 else ""
-
-        # Market impact row with TV links
-        mi_html = ""
-        if mi and imp >= 2:
-            mi_linked = _add_tv_links(mi)
-            mi_html = (
-                f'<div style="font-size:10.5px;color:#4A7A9B;margin-top:5px;'
-                f'line-height:1.3;letter-spacing:0.2px">{mi_linked}</div>'
+        with c1:
+            st.markdown(
+                f'<span style="{dim}background:{bg_c};color:{text_c};'
+                f'border:1px solid {ring_c};padding:2px 7px;border-radius:3px;'
+                f'font-size:9px;font-weight:800;letter-spacing:0.6px">{cat}</span>',
+                unsafe_allow_html=True,
             )
-
-        # Headline text — strip any residual HTML tags, then HTML-escape for safe embedding
-        clean_title = _re.sub(r"<[^>]+>", " ", art["title"])
-        clean_title = _re.sub(r"\s+", " ", clean_title).strip()
-        raw_title = clean_title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        title_linked = _add_tv_links(raw_title)
-        hl_color = {3: "#E2E8F0", 2: "#C5D0DC"}.get(imp, "#7A8FA8")
-        hl_weight = {3: "700", 2: "600"}.get(imp, "500")
-        hl_size   = {3: "13.5px", 2: "13px"}.get(imp, "12.5px")
-
-        headline_html = (
-            f'<a href="{link}" target="_blank" style="text-decoration:none">'
-            f'<div style="font-size:{hl_size};font-weight:{hl_weight};'
-            f'color:{hl_color};line-height:1.45;margin-top:5px">'
-            f'{title_linked}</div></a>'
-            if link else
-            f'<div style="font-size:{hl_size};font-weight:{hl_weight};'
-            f'color:{hl_color};line-height:1.45;margin-top:5px">'
-            f'{title_linked}</div>'
-        )
-
-        opacity_style = "opacity:0.50;" if is_read else ""
-        card_html = f"""
-        <div style="{opacity_style}background:#0A1628;border:1px solid #1A2540;
-                    border-left:3px solid {border};border-radius:0 6px 6px 0;
-                    padding:10px 14px;margin:3px 0">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            {cat_badge}
-            {imp_badge}
-            <span style="font-size:10px;font-weight:700;color:{src_color};
-                         letter-spacing:0.4px">{src}</span>
-            <span style="color:#2D3E56;font-size:10px">·</span>
-            <span style="font-size:10px;color:#2D3E56">{time_ago}</span>
-            <div style="margin-left:auto;display:flex;gap:4px;align-items:center">
-              {sources_badge}{read_badge}
-            </div>
-          </div>
-          {headline_html}
-          {mi_html}
-        </div>"""
-
-        col_card, col_btn = st.columns([17, 1])
-        with col_card:
-            st.markdown(card_html, unsafe_allow_html=True)
-        with col_btn:
-            btn_lbl  = "↩" if is_read else "✓"
-            btn_help = "Mark unread" if is_read else "Mark read"
-            if st.button(btn_lbl, key=f"rd_{tab_key}_{art_id}", help=btn_help):
+        with c2:
+            if imp_label:
+                if imp == 3:
+                    ibg, itc, ibc = "rgba(41,121,255,.2)", "#6FA8FF", "rgba(41,121,255,.4)"
+                else:
+                    ibg, itc, ibc = "rgba(100,116,139,.12)", "#8BA0B8", "rgba(100,116,139,.25)"
+                st.markdown(
+                    f'<span style="{dim}background:{ibg};color:{itc};'
+                    f'border:1px solid {ibc};padding:2px 5px;border-radius:3px;'
+                    f'font-size:9px;font-weight:700">{imp_label}</span>',
+                    unsafe_allow_html=True,
+                )
+        with c3:
+            st.markdown(
+                f'<span style="{dim}color:{src_color};font-size:10px;'
+                f'font-weight:700;letter-spacing:0.3px">{src}</span>',
+                unsafe_allow_html=True,
+            )
+        with c4:
+            st.markdown(
+                f'<span style="{dim}color:#374A5E;font-size:10px">{time_ago}</span>',
+                unsafe_allow_html=True,
+            )
+        with c5:
+            if st.button(
+                "↩" if is_read else "✓",
+                key=f"rd_{tab_key}_{art_id}",
+                help="Mark unread" if is_read else "Mark read",
+            ):
                 if is_read:
                     st.session_state.news_read.discard(art_id)
                 else:
                     st.session_state.news_read.add(art_id)
                 st.rerun()
+
+        # ── Line 2: headline link ─────────────────────────────────────
+        safe_title = (
+            title
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+        safe_link  = link.replace('"', "%22") if link else ""
+        hl_weight  = "700" if imp == 3 else "600" if imp == 2 else "500"
+        hl_color   = "#E2E8F0" if imp == 3 else "#C5D0DC" if imp == 2 else "#7A8FA8"
+
+        if safe_link:
+            st.markdown(
+                f'<a href="{safe_link}" target="_blank" style="{dim}'
+                f'color:{hl_color};text-decoration:none;font-weight:{hl_weight};'
+                f'font-size:13px;line-height:1.45;display:block;margin:2px 0 4px">'
+                f'{safe_title}</a>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<span style="{dim}color:{hl_color};font-weight:{hl_weight};'
+                f'font-size:13px">{safe_title}</span>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Line 3: market impact (plain text only) ───────────────────
+        if mi and imp >= 2:
+            clean_mi = _re.sub(r"<[^>]+>", "", mi)
+            st.caption(clean_mi)
+
+        # ── Separator ─────────────────────────────────────────────────
+        st.markdown(
+            '<hr style="border:none;border-top:1px solid #0E1C30;margin:4px 0">',
+            unsafe_allow_html=True,
+        )
 
 
 # ── Data loading & sidebar ─────────────────────────────────────────────────────
@@ -876,10 +863,7 @@ with tab_news:
     # ── Header row ────────────────────────────────────────────────────────
     hdr_col, ref_col = st.columns([5, 1])
     with hdr_col:
-        st.caption(
-            "14 feeds · Fed · ECB · Reuters · BBC · Al Jazeera · AP · Forbes · "
-            "TechCrunch · The Verge · Euractiv · DW · auto-scored · 15-min cache"
-        )
+        st.caption("Live · Auto-classified · 15-min cache")
     with ref_col:
         if st.button("Refresh", key="news_refresh", use_container_width=True):
             fetch_all_news.clear(); st.rerun()
@@ -895,7 +879,7 @@ with tab_news:
         with f1:
             imp_filter = st.radio(
                 "Importance",
-                ["High + Medium", "High Only", "All"],
+                ["Tier 1 + 2", "Tier 1 Only", "All Stories"],
                 horizontal=True, index=0,
                 label_visibility="collapsed",
                 key="news_imp_filter",
@@ -906,9 +890,9 @@ with tab_news:
                 label_visibility="collapsed", key="news_search",
             )
         with f3:
-            show_unread = st.toggle("Unread only", key="news_unread_toggle")
+            show_unread = st.toggle("New Only", key="news_unread_toggle")
         with f4:
-            if st.button("Mark all read", key="news_mark_all",
+            if st.button("Clear", key="news_mark_all",
                          use_container_width=True):
                 for a in all_articles:
                     st.session_state.news_read.add(article_id(a))
@@ -923,9 +907,9 @@ with tab_news:
             n = len(pool)
             st.caption(f"{n} result{'s' if n != 1 else ''} for \"{search_q}\"")
 
-        if imp_filter == "High Only":
+        if imp_filter == "Tier 1 Only":
             pool = [a for a in pool if a.get("importance", 1) == 3]
-        elif imp_filter == "High + Medium":
+        elif imp_filter == "Tier 1 + 2":
             pool = [a for a in pool if a.get("importance", 1) >= 2]
 
         if show_unread:
