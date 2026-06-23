@@ -386,7 +386,7 @@ def _add_tv_links(text: str) -> str:
     return "".join(parts)
 
 
-def _render_articles(articles: list):
+def _render_articles(articles: list, tab_key: str = "all"):
     if not articles:
         st.caption("No articles in this category yet — try refreshing.")
         return
@@ -457,8 +457,10 @@ def _render_articles(articles: list):
                 f'line-height:1.3;letter-spacing:0.2px">{mi_linked}</div>'
             )
 
-        # Headline text with TV links
-        raw_title = art["title"].replace("<", "&lt;").replace(">", "&gt;")
+        # Headline text — strip any residual HTML tags, then HTML-escape for safe embedding
+        clean_title = _re.sub(r"<[^>]+>", " ", art["title"])
+        clean_title = _re.sub(r"\s+", " ", clean_title).strip()
+        raw_title = clean_title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         title_linked = _add_tv_links(raw_title)
         hl_color = {3: "#E2E8F0", 2: "#C5D0DC"}.get(imp, "#7A8FA8")
         hl_weight = {3: "700", 2: "600"}.get(imp, "500")
@@ -501,7 +503,7 @@ def _render_articles(articles: list):
         with col_btn:
             btn_lbl  = "↩" if is_read else "✓"
             btn_help = "Mark unread" if is_read else "Mark read"
-            if st.button(btn_lbl, key=f"rd_{art_id}", help=btn_help):
+            if st.button(btn_lbl, key=f"rd_{tab_key}_{art_id}", help=btn_help):
                 if is_read:
                     st.session_state.news_read.discard(art_id)
                 else:
@@ -938,27 +940,27 @@ with tab_news:
         ])
 
         with n_all:
-            _render_articles(pool)
+            _render_articles(pool, "all")
 
         with n_cb:
             _render_articles([a for a in pool
-                              if a.get("category") == "CENTRAL BANKS"])
+                              if a.get("category") == "CENTRAL BANKS"], "cb")
 
         with n_macro:
             _render_articles([a for a in pool
-                              if a.get("category") == "MACRO"])
+                              if a.get("category") == "MACRO"], "mac")
 
         with n_geo:
             _render_articles([a for a in pool
-                              if a.get("category") == "GEOPOLITICAL"])
+                              if a.get("category") == "GEOPOLITICAL"], "geo")
 
         with n_mkt:
             _render_articles([a for a in pool
-                              if a.get("category") == "MARKETS"])
+                              if a.get("category") == "MARKETS"], "mkt")
 
         with n_tech:
             _render_articles([a for a in pool
-                              if a.get("category") == "TECH & AI"])
+                              if a.get("category") == "TECH & AI"], "tech")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
