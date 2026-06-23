@@ -1,22 +1,23 @@
 """
 Economic Calendar
 -----------------
-Sources (all free):
-  1. Hard-coded FOMC & ECB meeting schedules for 2025-2026
-  2. FRED series last-observation dates → estimated next release dates
-  3. FinnHub (optional free key at finnhub.io) → adds consensus forecasts,
-     exact release times, and proper beat/miss classification
+Priority order:
+  1. Trading Economics API (free key → 30-day forward calendar with consensus)
+  2. Static 2025-2026 release schedule (CPI, NFP, PCE, GDP, HICP + CB meetings)
+     enriched with FRED actuals for events that have already been released
+  3. Pure FRED-derived estimates when no static date is available
 
-Without FinnHub: exact FOMC/ECB dates + approximate US & EU release dates + actuals
-With FINNHUB_API_KEY in secrets.toml: full professional calendar with consensus
+Secrets:
+  TE_API_KEY = "..."     ← tradingeconomics.com/api (free tier works)
 """
 
 import datetime as dt
+
 import requests
 import streamlit as st
 
 # ── Hard-coded central bank meeting dates ──────────────────────────────────────
-# Source: federalreserve.gov and ecb.europa.eu (rate decision announcement day)
+# Source: federalreserve.gov / ecb.europa.eu / bankofengland.co.uk
 
 FOMC_DATES = [
     "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
@@ -39,47 +40,138 @@ BOE_DATES = [
     "2026-08-06", "2026-09-17", "2026-11-05", "2026-12-17",
 ]
 
-# ── FRED series → calendar config ──────────────────────────────────────────────
-# next_release_days: days from last FRED observation date to estimated next release
-# (monthly obs dates are first of month; interval accounts for release lag)
-# impact_type: "inflation" | "growth" | "labor"
-# For inflation: actual > estimate = HOTTER (hawkish surprise)
-# For growth/labor: actual > estimate = BEAT (upside surprise)
+# ── Static 2025-2026 data release schedule ─────────────────────────────────────
+# All dates approximate ± 1-3 days. Sourced from BLS/BEA/Eurostat release calendars.
+# Marked approximate=True so the UI shows "~" prefix.
+# The FRED enrichment pass will fill in 'actual' and 'prev' values once released.
 
-FRED_RELEASE_CONFIG = {
-    "US CPI (YoY)":          {"key": "cpi_yoy",        "interval": 70, "impact": "inflation",  "importance": "high",   "country": "US"},
-    "US Core CPI (YoY)":     {"key": "core_cpi_yoy",   "interval": 70, "impact": "inflation",  "importance": "high",   "country": "US"},
-    "US PCE (YoY)":          {"key": "pce_yoy",         "interval": 65, "impact": "inflation",  "importance": "high",   "country": "US"},
-    "US Core PCE (YoY)":     {"key": "core_pce_yoy",   "interval": 65, "impact": "inflation",  "importance": "high",   "country": "US"},
-    "US PPI (YoY)":          {"key": "ppi_yoy",         "interval": 45, "impact": "inflation",  "importance": "medium", "country": "US"},
-    "US NFP":                {"key": "nfp",              "interval": 35, "impact": "growth",     "importance": "high",   "country": "US"},
-    "US Unemployment Rate":  {"key": "unemployment",    "interval": 35, "impact": "labor",      "importance": "high",   "country": "US"},
-    "US Initial Claims":     {"key": "initial_claims",  "interval": 7,  "impact": "labor",      "importance": "medium", "country": "US"},
-    "US Retail Sales (YoY)": {"key": "retail_sales_yoy","interval": 45, "impact": "growth",     "importance": "medium", "country": "US"},
-    "US Housing Starts":     {"key": "housing_starts",  "interval": 50, "impact": "growth",     "importance": "medium", "country": "US"},
-    "US Consumer Sentiment": {"key": "consumer_sentiment","interval":35,"impact": "growth",     "importance": "medium", "country": "US"},
-    "EU HICP (YoY)":         {"key": "eu_hicp",         "interval": 60, "impact": "inflation",  "importance": "high",   "country": "EU"},
-    "EU Unemployment Rate":  {"key": "eu_unemployment", "interval": 65, "impact": "labor",      "importance": "medium", "country": "EU"},
-    "UK CPI (YoY)":          {"key": "uk_cpi_yoy",      "interval": 45, "impact": "inflation",  "importance": "high",   "country": "GB"},
-    "UK Unemployment Rate":  {"key": "uk_unemployment", "interval": 50, "impact": "labor",      "importance": "medium", "country": "GB"},
+_STATIC_RELEASES = [
+    # ── US CPI (~2nd week each month, 08:30 ET, BLS) ─────────────────────────
+    *[{"date": d, "name": "US CPI (YoY)", "country": "US",
+       "importance": "high", "impact": "inflation", "fred_key": "cpi_yoy"}
+      for d in ["2025-01-15","2025-02-12","2025-03-12","2025-04-10","2025-05-13",
+                "2025-06-11","2025-07-15","2025-08-12","2025-09-10","2025-10-15",
+                "2025-11-13","2025-12-10",
+                "2026-01-15","2026-02-12","2026-03-12","2026-04-09","2026-05-13",
+                "2026-06-11","2026-07-15","2026-08-13","2026-09-10","2026-10-14",
+                "2026-11-12","2026-12-10"]],
+    # ── US Core CPI ──────────────────────────────────────────────────────────
+    *[{"date": d, "name": "US Core CPI (YoY)", "country": "US",
+       "importance": "high", "impact": "inflation", "fred_key": "core_cpi_yoy"}
+      for d in ["2025-01-15","2025-02-12","2025-03-12","2025-04-10","2025-05-13",
+                "2025-06-11","2025-07-15","2025-08-12","2025-09-10","2025-10-15",
+                "2025-11-13","2025-12-10",
+                "2026-01-15","2026-02-12","2026-03-12","2026-04-09","2026-05-13",
+                "2026-06-11"]],
+    # ── US NFP (~1st Friday each month, 08:30 ET, BLS) ───────────────────────
+    *[{"date": d, "name": "US Nonfarm Payrolls", "country": "US",
+       "importance": "high", "impact": "growth", "fred_key": "nfp"}
+      for d in ["2025-01-10","2025-02-07","2025-03-07","2025-04-04","2025-05-02",
+                "2025-06-06","2025-07-03","2025-08-01","2025-09-05","2025-10-03",
+                "2025-11-07","2025-12-05",
+                "2026-01-09","2026-02-06","2026-03-06","2026-04-03","2026-05-01",
+                "2026-06-05","2026-07-02"]],
+    # ── US Unemployment Rate (same release as NFP) ────────────────────────────
+    *[{"date": d, "name": "US Unemployment Rate", "country": "US",
+       "importance": "high", "impact": "labor", "fred_key": "unemployment"}
+      for d in ["2025-01-10","2025-02-07","2025-03-07","2025-04-04","2025-05-02",
+                "2025-06-06","2025-07-03","2025-08-01","2025-09-05","2025-10-03",
+                "2025-11-07","2025-12-05",
+                "2026-01-09","2026-02-06","2026-03-06","2026-04-03","2026-05-01",
+                "2026-06-05","2026-07-02"]],
+    # ── US Core PCE (~last Friday each month, 08:30 ET, BEA) ─────────────────
+    *[{"date": d, "name": "US Core PCE (YoY)", "country": "US",
+       "importance": "high", "impact": "inflation", "fred_key": "core_pce_yoy"}
+      for d in ["2025-01-31","2025-02-28","2025-03-28","2025-04-25","2025-05-30",
+                "2025-06-27","2025-07-25","2025-08-29","2025-09-26","2025-10-31",
+                "2025-11-26","2025-12-19",
+                "2026-01-30","2026-02-27","2026-03-27","2026-04-24","2026-05-29",
+                "2026-06-26","2026-07-31"]],
+    # ── US GDP Advance (~end of Jan/Apr/Jul/Oct, 08:30 ET, BEA) ─────────────
+    *[{"date": d, "name": "US GDP Advance Estimate", "country": "US",
+       "importance": "high", "impact": "growth", "fred_key": None}
+      for d in ["2025-01-30","2025-04-30","2025-07-30","2025-10-30",
+                "2026-01-29","2026-04-29","2026-07-30"]],
+    # ── US Retail Sales (~mid-month, 08:30 ET, Census Bureau) ────────────────
+    *[{"date": d, "name": "US Retail Sales (MoM)", "country": "US",
+       "importance": "medium", "impact": "growth", "fred_key": "retail_sales_yoy"}
+      for d in ["2025-01-16","2025-02-14","2025-03-17","2025-04-16","2025-05-15",
+                "2025-06-17","2025-07-17","2025-08-15","2025-09-17","2025-10-17",
+                "2025-11-14","2025-12-16",
+                "2026-01-16","2026-02-13","2026-03-17","2026-04-15","2026-05-15",
+                "2026-06-16"]],
+    # ── EU HICP Flash (~last day of month, Eurostat) ──────────────────────────
+    *[{"date": d, "name": "EU HICP Inflation Flash (YoY)", "country": "EU",
+       "importance": "high", "impact": "inflation", "fred_key": "eu_hicp"}
+      for d in ["2025-01-31","2025-02-28","2025-03-31","2025-04-30","2025-05-30",
+                "2025-06-27","2025-07-31","2025-08-29","2025-09-30","2025-10-31",
+                "2025-11-28","2025-12-17",
+                "2026-01-30","2026-02-27","2026-03-31","2026-04-30","2026-05-29",
+                "2026-06-30"]],
+    # ── UK CPI (~2nd Wednesday each month, ONS) ───────────────────────────────
+    *[{"date": d, "name": "UK CPI (YoY)", "country": "GB",
+       "importance": "high", "impact": "inflation", "fred_key": "uk_cpi_yoy"}
+      for d in ["2025-01-15","2025-02-19","2025-03-26","2025-04-16","2025-05-21",
+                "2025-06-18","2025-07-16","2025-08-20","2025-09-17","2025-10-15",
+                "2025-11-19","2025-12-17",
+                "2026-01-21","2026-02-18","2026-03-25","2026-04-15","2026-05-20",
+                "2026-06-17"]],
+]
+
+# ── Trading Economics country mapping ─────────────────────────────────────────
+_TE_COUNTRY_MAP = {
+    "united states": "US",
+    "euro area":     "EU",
+    "european union":"EU",
+    "united kingdom":"GB",
+    "germany":       "DE",
+    "france":        "FR",
+    "italy":         "IT",
+    "spain":         "ES",
+    "japan":         "JP",
+    "china":         "CN",
+    "canada":        "CA",
+    "australia":     "AU",
+}
+_TE_IMPORTANCE_MAP = {3: "high", 2: "medium", 1: "low"}
+
+_TE_IMPACT_MAP = {
+    "inflation": "inflation", "cpi": "inflation", "pce": "inflation",
+    "hicp": "inflation", "ppi": "inflation", "price": "inflation",
+    "deflator": "inflation",
+    "gdp": "growth", "retail": "growth", "pmi": "growth",
+    "production": "growth", "housing": "growth", "sales": "growth",
+    "confidence": "growth", "sentiment": "growth", "leading": "growth",
+    "payroll": "growth", "nonfarm": "growth", "non farm": "growth",
+    "unemploy": "labor", "jobless": "labor", "claims": "labor",
+    "employment": "labor",
+    "rate decision": "policy", "interest rate": "policy",
+    "fomc": "policy", "ecb": "policy", "boe": "policy",
+    "monetary policy": "policy",
 }
 
-# ── Impact coloring ────────────────────────────────────────────────────────────
+# Target countries and minimum importance for TE filter
+_TE_COUNTRIES  = "united states,euro area,united kingdom,germany,france,italy,spain"
+_TE_MIN_IMP    = 2  # skip importance=1 (low)
 
-_COUNTRY_LABELS  = {"US": "US", "EU": "EU", "GB": "UK", "DE": "DE", "FR": "FR",
-                    "JP": "JP", "CN": "CN", "CA": "CA", "AU": "AU"}
+# ── Labels ────────────────────────────────────────────────────────────────────
+
+_COUNTRY_LABELS    = {"US": "US", "EU": "EU", "GB": "UK", "DE": "DE", "FR": "FR",
+                      "IT": "IT", "ES": "ES", "JP": "JP", "CN": "CN", "CA": "CA"}
 _IMPORTANCE_LABELS = {"high": "HIGH", "medium": "MED", "low": "LOW"}
 
 
+def flag(country: str) -> str:
+    return _COUNTRY_LABELS.get(country.upper(), country.upper())
+
+
+def importance_dot(level: str) -> str:
+    return _IMPORTANCE_LABELS.get(level.lower(), level.upper())
+
+
+# ── Beat/miss signal ──────────────────────────────────────────────────────────
+
 def beat_miss_label(actual, forecast, impact_type: str) -> str | None:
-    """
-    Returns colored label based on whether the actual beat or missed expectations.
-    For inflation:  actual > forecast = HOTTER  (hawkish, bad for bonds/risk)
-    For inflation:  actual < forecast = COOLER  (dovish, good for bonds)
-    For growth/jobs: actual > forecast = BEAT
-    For growth/jobs: actual < forecast = MISS
-    For labor (unemployment): inverted — higher = bad
-    """
     if actual is None or forecast is None:
         return None
     try:
@@ -87,7 +179,7 @@ def beat_miss_label(actual, forecast, impact_type: str) -> str | None:
     except (TypeError, ValueError):
         return None
     diff = a - f
-    tol  = abs(f) * 0.05 if f else 0.05  # 5% relative tolerance = "in-line"
+    tol  = abs(f) * 0.05 if f else 0.05
     if abs(diff) <= tol:
         return "IN-LINE"
     if impact_type == "inflation":
@@ -98,234 +190,291 @@ def beat_miss_label(actual, forecast, impact_type: str) -> str | None:
         return "BEAT" if diff > 0 else "MISS"
 
 
-def _fmt_val(v, key: str = "") -> str:
-    """Format a numeric value for display."""
+def _fmt_val(v, key: str = "", unit: str = "") -> str:
     if v is None:
         return "—"
     try:
         f = float(v)
-        if "nfp" in key or "claims" in key or "starts" in key:
-            return f"{f:,.0f}"
+        if unit:
+            return f"{f:.2f}{unit}"
+        if key and any(k in key for k in ("nfp", "payroll", "claims", "starts")):
+            return f"{f:,.0f}K"
         return f"{f:.2f}%"
     except (TypeError, ValueError):
-        return str(v)
+        return str(v) if str(v) else "—"
 
 
-# ── FRED-based calendar (no extra key needed) ──────────────────────────────────
+def _impact_type_from_text(text: str) -> str:
+    lc = text.lower()
+    for kw, itype in _TE_IMPACT_MAP.items():
+        if kw in lc:
+            return itype
+    return "growth"
 
-def build_from_fred(fred_data: dict) -> list[dict]:
+
+# ── Trading Economics calendar ────────────────────────────────────────────────
+
+@st.cache_data(ttl=60 * 60)  # hourly — TE calendar updates ~daily
+def fetch_te_calendar(api_key: str, days_back: int = 14, days_ahead: int = 45) -> list[dict]:
     """
-    Derive upcoming + recent calendar events purely from FRED data already loaded.
-    Uses last observation date + typical release interval to estimate next release.
+    Fetch 30-day forward (+ recent) economic calendar from Trading Economics.
+    Free API key at tradingeconomics.com/api — returns consensus forecasts,
+    previous values, and actuals once released.
     """
-    today = dt.date.today()
-    events = []
+    today  = dt.date.today()
+    d1     = (today - dt.timedelta(days=days_back)).isoformat()
+    d2     = (today + dt.timedelta(days=days_ahead)).isoformat()
 
-    for name, cfg in FRED_RELEASE_CONFIG.items():
-        entry = fred_data.get(cfg["key"]) if fred_data else None
-        if not entry:
-            continue
-        series = entry.get("series")
-        if series is None or series.dropna().empty:
-            continue
-
-        s = series.dropna()
-        # Last observation date (first of month for monthly series)
-        last_obs = s.index[-1].date()
-        last_val = s.iloc[-1]
-        prev_val = s.iloc[-2] if len(s) >= 2 else None
-
-        interval = cfg["interval"]
-
-        # Estimated next release (advance past any already-passed estimates)
-        est_next = last_obs + dt.timedelta(days=interval)
-        while est_next <= today:
-            est_next += dt.timedelta(days=interval)
-
-        # Upcoming event
-        events.append({
-            "date":        est_next,
-            "name":        name,
-            "country":     cfg["country"],
-            "importance":  cfg["importance"],
-            "impact_type": cfg["impact"],
-            "actual":      None,
-            "forecast":    None,
-            "prev":        last_val,
-            "prev_fmt":    _fmt_val(last_val, cfg["key"]),
-            "status":      "upcoming",
-            "approximate": True,
-            "source":      "FRED",
-        })
-
-        # Recent release (if last update was within 21 days)
-        # Approximate "release date" = last_obs + interval/2 (midpoint heuristic)
-        approx_release = last_obs + dt.timedelta(days=interval // 2)
-        if (today - approx_release).days <= 21:
-            events.append({
-                "date":        approx_release,
-                "name":        name,
-                "country":     cfg["country"],
-                "importance":  cfg["importance"],
-                "impact_type": cfg["impact"],
-                "actual":      last_val,
-                "actual_fmt":  _fmt_val(last_val, cfg["key"]),
-                "forecast":    None,
-                "prev":        prev_val,
-                "prev_fmt":    _fmt_val(prev_val, cfg["key"]),
-                "beat_miss":   None,
-                "status":      "released",
-                "approximate": True,
-                "source":      "FRED",
-            })
-
-    # ── Add FOMC, ECB, BoE meetings ────────────────────────────────────────
-    for date_str in FOMC_DATES:
-        d = dt.date.fromisoformat(date_str)
-        status = "released" if d <= today else "upcoming"
-        events.append({
-            "date": d, "name": "FOMC Rate Decision",
-            "country": "US", "importance": "high", "impact_type": "policy",
-            "actual": None, "forecast": None, "prev": None, "prev_fmt": "—",
-            "status": status, "approximate": False, "source": "Fed",
-        })
-
-    for date_str in ECB_DATES:
-        d = dt.date.fromisoformat(date_str)
-        status = "released" if d <= today else "upcoming"
-        events.append({
-            "date": d, "name": "ECB Rate Decision",
-            "country": "EU", "importance": "high", "impact_type": "policy",
-            "actual": None, "forecast": None, "prev": None, "prev_fmt": "—",
-            "status": status, "approximate": False, "source": "ECB",
-        })
-
-    for date_str in BOE_DATES:
-        d = dt.date.fromisoformat(date_str)
-        status = "released" if d <= today else "upcoming"
-        events.append({
-            "date": d, "name": "BoE Rate Decision",
-            "country": "GB", "importance": "high", "impact_type": "policy",
-            "actual": None, "forecast": None, "prev": None, "prev_fmt": "—",
-            "status": status, "approximate": False, "source": "BoE",
-        })
-
-    return sorted(events, key=lambda x: x["date"])
-
-
-# ── FinnHub calendar (optional — free API key at finnhub.io) ──────────────────
-
-@st.cache_data(ttl=60 * 15)
-def fetch_finnhub_calendar(api_key: str, days_back: int = 7, days_ahead: int = 45) -> list[dict]:
-    """
-    Fetch economic calendar from FinnHub with consensus forecasts.
-    Filters to high/medium impact events in US, EU, GB.
-    """
-    today = dt.date.today()
-    from_d = (today - dt.timedelta(days=days_back)).isoformat()
-    to_d   = (today + dt.timedelta(days=days_ahead)).isoformat()
     try:
         r = requests.get(
-            "https://finnhub.io/api/v1/calendar/economic",
-            params={"from": from_d, "to": to_d, "token": api_key},
-            headers={"User-Agent": "MacroDashboard/2.0"},
-            timeout=12,
+            "https://api.tradingeconomics.com/calendar",
+            params={
+                "c":       api_key,
+                "country": _TE_COUNTRIES,
+                "d1":      d1,
+                "d2":      d2,
+            },
+            headers={"User-Agent": "MacroDashboard/3.0 (educational)"},
+            timeout=15,
         )
         r.raise_for_status()
-        raw = r.json().get("economicCalendar", [])
+        raw = r.json()
+        if not isinstance(raw, list):
+            return []
     except Exception:
         return []
 
-    target_countries = {"US", "EU", "GB", "DE", "FR", "IT", "ES"}
-    target_impacts   = {"high", "medium"}
-
-    IMPACT_MAP = {
-        "cpi":        "inflation", "pce":   "inflation", "hicp": "inflation",
-        "inflation":  "inflation", "ppi":   "inflation", "price": "inflation",
-        "gdp":        "growth",    "retail": "growth",   "pmi":  "growth",
-        "production": "growth",    "housing": "growth",  "sales": "growth",
-        "unemploy":   "labor",     "payroll": "growth",  "jobs":  "growth",
-        "claims":     "labor",     "employment": "labor",
-    }
-
     events = []
     for e in raw:
-        country = (e.get("country") or "").upper()
-        impact  = (e.get("impact")  or "low").lower()
-        if country not in target_countries or impact not in target_impacts:
-            continue
-        event_name = e.get("event", "")
-        time_str   = e.get("time", "")
+        # Importance filter
+        imp_num = e.get("Importance") or 0
         try:
-            event_date = dt.date.fromisoformat(time_str[:10])
+            imp_num = int(imp_num)
+        except (TypeError, ValueError):
+            imp_num = 0
+        if imp_num < _TE_MIN_IMP:
+            continue
+
+        # Country filter & mapping
+        country_raw = (e.get("Country") or e.get("OCountry") or "").lower().strip()
+        country     = _TE_COUNTRY_MAP.get(country_raw)
+        if not country:
+            continue
+
+        # Date parsing
+        date_raw = e.get("Date") or ""
+        try:
+            event_date = dt.date.fromisoformat(date_raw[:10])
         except (ValueError, TypeError):
             continue
 
-        # Determine impact_type from event name keywords
-        name_lc = event_name.lower()
-        impact_type = next(
-            (v for k, v in IMPACT_MAP.items() if k in name_lc), "growth"
-        )
-        actual   = e.get("actual")
-        forecast = e.get("estimate")
-        prev     = e.get("prev")
-        unit     = e.get("unit") or ""
+        # Time (may be empty for day-only releases)
+        time_str = date_raw[11:16] if len(date_raw) > 10 else ""
 
-        def _fv(v):
-            if v is None: return "—"
-            try: return f"{float(v):.2f}{unit}"
-            except: return str(v)
+        # Event label
+        event_name = (e.get("Event") or e.get("Category") or "").strip()
+        category   = (e.get("Category") or "").strip()
+        if not event_name:
+            continue
+
+        importance  = _TE_IMPORTANCE_MAP.get(imp_num, "medium")
+        impact_type = _impact_type_from_text(event_name + " " + category)
+
+        actual   = e.get("Actual")   or None
+        forecast = e.get("Forecast") or e.get("TEForecast") or None
+        prev     = e.get("Previous") or None
+        unit     = (e.get("Unit") or "").strip()
+        if unit == "%":
+            unit = "%"
+        elif unit:
+            unit = " " + unit
+
+        # Clean up empty-string values from the API
+        if actual   == "": actual   = None
+        if forecast == "": forecast = None
+        if prev     == "": prev     = None
 
         events.append({
-            "date":        event_date,
-            "time_et":     time_str[11:16] if len(time_str) > 10 else "",
-            "name":        event_name,
-            "country":     country,
-            "importance":  impact,
-            "impact_type": impact_type,
-            "actual":      actual,
-            "actual_fmt":  _fv(actual),
-            "forecast":    forecast,
-            "forecast_fmt":_fv(forecast),
-            "prev":        prev,
-            "prev_fmt":    _fv(prev),
-            "beat_miss":   beat_miss_label(actual, forecast, impact_type),
-            "status":      "released" if actual is not None else "upcoming",
-            "approximate": False,
-            "source":      "FinnHub",
+            "date":         event_date,
+            "time_et":      time_str,
+            "name":         event_name,
+            "country":      country,
+            "importance":   importance,
+            "impact_type":  impact_type,
+            "actual":       actual,
+            "actual_fmt":   _fmt_val(actual,   unit=unit),
+            "forecast":     forecast,
+            "forecast_fmt": _fmt_val(forecast, unit=unit),
+            "prev":         prev,
+            "prev_fmt":     _fmt_val(prev,     unit=unit),
+            "beat_miss":    beat_miss_label(actual, forecast, impact_type),
+            "status":       "released" if actual is not None else "upcoming",
+            "approximate":  False,
+            "source":       "Trading Economics",
         })
 
     return sorted(events, key=lambda x: x["date"])
 
 
-def get_calendar(fred_data: dict | None, finnhub_key: str | None = None) -> tuple[list, list, list]:
+# ── Static + FRED fallback ────────────────────────────────────────────────────
+
+def _enrich_with_fred(events: list[dict], fred_data: dict | None) -> list[dict]:
     """
-    Returns (today_events, upcoming_events, recent_events) sorted and filtered.
-    Uses FinnHub if key provided, otherwise FRED + hard-coded schedule.
+    For each static event that has a fred_key and whose date has passed,
+    look up the FRED series and attach the actual value + previous value.
+    Also computes a rough beat_miss against any existing forecast.
+    """
+    if not fred_data:
+        return events
+    today = dt.date.today()
+    enriched = []
+    for evt in events:
+        fkey = evt.get("fred_key")
+        if fkey and evt["date"] <= today and evt.get("actual") is None:
+            entry = fred_data.get(fkey, {})
+            s = entry.get("series")
+            if s is not None and not s.dropna().empty:
+                s = s.dropna()
+                # Find the FRED observation closest to the event date
+                obs_before = s[s.index.date <= evt["date"]]  # type: ignore[misc]
+                if not obs_before.empty:
+                    actual_val = float(obs_before.iloc[-1])
+                    prev_val   = float(obs_before.iloc[-2]) if len(obs_before) >= 2 else None
+                    evt = {**evt,
+                           "actual":     actual_val,
+                           "actual_fmt": _fmt_val(actual_val, key=fkey),
+                           "prev":       prev_val,
+                           "prev_fmt":   _fmt_val(prev_val, key=fkey),
+                           "status":     "released",
+                           "beat_miss":  beat_miss_label(actual_val, evt.get("forecast"),
+                                                          evt.get("impact_type", "growth"))}
+        enriched.append(evt)
+    return enriched
+
+
+def build_static_calendar(fred_data: dict | None) -> list[dict]:
+    """
+    Build calendar from the static release schedule + hard-coded CB meetings.
+    Enrich past events with FRED actuals.
+    """
+    today  = dt.date.today()
+    events = []
+
+    # Static data releases
+    for cfg in _STATIC_RELEASES:
+        d = dt.date.fromisoformat(cfg["date"])
+        events.append({
+            "date":        d,
+            "name":        cfg["name"],
+            "country":     cfg["country"],
+            "importance":  cfg["importance"],
+            "impact_type": cfg["impact"],
+            "fred_key":    cfg.get("fred_key"),
+            "actual":      None,
+            "actual_fmt":  "—",
+            "forecast":    None,
+            "forecast_fmt":"—",
+            "prev":        None,
+            "prev_fmt":    "—",
+            "beat_miss":   None,
+            "status":      "released" if d <= today else "upcoming",
+            "approximate": True,
+            "source":      "Static schedule",
+        })
+
+    # Central bank meetings (exact dates)
+    for date_str in FOMC_DATES:
+        d = dt.date.fromisoformat(date_str)
+        events.append({
+            "date": d, "name": "FOMC Rate Decision",
+            "country": "US", "importance": "high", "impact_type": "policy",
+            "fred_key": None,
+            "actual": None, "actual_fmt": "—",
+            "forecast": None, "forecast_fmt": "—",
+            "prev": None, "prev_fmt": "—",
+            "beat_miss": None,
+            "status": "released" if d <= today else "upcoming",
+            "approximate": False, "source": "Fed",
+        })
+    for date_str in ECB_DATES:
+        d = dt.date.fromisoformat(date_str)
+        events.append({
+            "date": d, "name": "ECB Rate Decision",
+            "country": "EU", "importance": "high", "impact_type": "policy",
+            "fred_key": None,
+            "actual": None, "actual_fmt": "—",
+            "forecast": None, "forecast_fmt": "—",
+            "prev": None, "prev_fmt": "—",
+            "beat_miss": None,
+            "status": "released" if d <= today else "upcoming",
+            "approximate": False, "source": "ECB",
+        })
+    for date_str in BOE_DATES:
+        d = dt.date.fromisoformat(date_str)
+        events.append({
+            "date": d, "name": "BoE Rate Decision",
+            "country": "GB", "importance": "high", "impact_type": "policy",
+            "fred_key": None,
+            "actual": None, "actual_fmt": "—",
+            "forecast": None, "forecast_fmt": "—",
+            "prev": None, "prev_fmt": "—",
+            "beat_miss": None,
+            "status": "released" if d <= today else "upcoming",
+            "approximate": False, "source": "BoE",
+        })
+
+    # Enrich past events with FRED actuals
+    events = _enrich_with_fred(events, fred_data)
+
+    # Deduplicate by (date, name) keeping latest-enriched version
+    seen: dict[tuple, dict] = {}
+    for evt in events:
+        key = (evt["date"], evt["name"])
+        if key not in seen or evt.get("actual") is not None:
+            seen[key] = evt
+    return sorted(seen.values(), key=lambda x: x["date"])
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def get_calendar(
+    fred_data: dict | None,
+    te_api_key: str | None = None,
+) -> tuple[list, list, list]:
+    """
+    Returns (today_events, upcoming_events, recent_events).
+
+    Strategy:
+      1. Trading Economics API if key provided → full 30-day forward calendar
+         with real consensus forecasts. Falls back to static if TE returns empty.
+      2. Static schedule + FRED enrichment otherwise.
     """
     today = dt.date.today()
+    te_events: list[dict] = []
 
-    if finnhub_key:
-        events = fetch_finnhub_calendar(finnhub_key)
-    elif fred_data:
-        events = build_from_fred(fred_data)
+    if te_api_key:
+        te_events = fetch_te_calendar(te_api_key)
+
+    if te_events:
+        events = te_events
+        # Merge in any static CB meeting dates not covered by TE
+        static = build_static_calendar(fred_data)
+        cb_names = {"FOMC Rate Decision", "ECB Rate Decision", "BoE Rate Decision"}
+        te_keys  = {(e["date"], e["name"]) for e in te_events}
+        for s in static:
+            if s["name"] in cb_names and (s["date"], s["name"]) not in te_keys:
+                events.append(s)
+        events = sorted(events, key=lambda x: x["date"])
     else:
-        events = build_from_fred({})
+        events = build_static_calendar(fred_data)
 
     today_evts    = [e for e in events if e["date"] == today]
     upcoming_evts = [e for e in events if e["date"] > today]
     recent_evts   = sorted(
-        [e for e in events if e["status"] == "released" and
-         (today - e["date"]).days <= 21 and e["date"] < today],
+        [e for e in events
+         if e.get("status") == "released"
+         and e["date"] < today
+         and (today - e["date"]).days <= 30],
         key=lambda x: x["date"], reverse=True,
     )
-
-    return today_evts, upcoming_evts[:30], recent_evts[:20]
-
-
-def flag(country: str) -> str:
-    return _COUNTRY_LABELS.get(country.upper(), country.upper())
-
-
-def importance_dot(level: str) -> str:
-    return _IMPORTANCE_LABELS.get(level.lower(), level.upper())
+    return today_evts, upcoming_evts[:40], recent_evts[:25]

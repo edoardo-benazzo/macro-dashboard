@@ -384,13 +384,13 @@ if not fred_api_key:
                                           help="Free at fred.stlouisfed.org")
 
 try:
-    finnhub_key = st.secrets["FINNHUB_API_KEY"]
+    te_api_key = st.secrets["TE_API_KEY"]
 except Exception:
-    finnhub_key = None
-if not finnhub_key:
-    finnhub_key = st.sidebar.text_input(
-        "FinnHub API key (optional)", type="password",
-        help="Free at finnhub.io — adds consensus forecasts to Economic Calendar")
+    te_api_key = None
+if not te_api_key:
+    te_api_key = st.sidebar.text_input(
+        "Trading Economics API key (optional)", type="password",
+        help="Free at tradingeconomics.com/api — powers the 30-day forward calendar with consensus forecasts")
 
 show_zscore = st.sidebar.checkbox("Show Z-scores", value=True)
 
@@ -401,7 +401,7 @@ if st.sidebar.button("Force Refresh All Data", use_container_width=True):
 
 last_refresh = dt.datetime.now().strftime("%H:%M:%S")
 st.sidebar.caption(f"Markets 2 min · Macro 6h · Last load: {last_refresh}")
-st.sidebar.caption("FRED · Yahoo Finance · CoinGecko\nmempool.space · Alternative.me")
+st.sidebar.caption("FRED · Yahoo Finance · CoinGecko\nmempool.space · Trading Economics")
 
 # ── Load data ──────────────────────────────────────────────────────────────────
 
@@ -431,7 +431,7 @@ def _latest(key: str) -> float | None:
 # ── Page header & today's event banner ────────────────────────────────────────
 _page_header()
 
-today_evts, upcoming_evts, recent_evts = get_calendar(fred_data, finnhub_key)
+today_evts, upcoming_evts, recent_evts = get_calendar(fred_data, te_api_key)
 if today_evts:
     names = " · ".join(f"<strong>{e['name']}</strong>" for e in today_evts[:4])
     _alert(f"RELEASES TODAY: {names}", "info")
@@ -610,16 +610,17 @@ with tab_score:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_cal:
-    if not finnhub_key:
+    if not te_api_key:
         _alert(
-            "Add a free FinnHub API key (sidebar) to unlock consensus forecasts, "
-            "exact release times, and beat/miss classification. Free at finnhub.io. "
-            "Without it, you still see the full schedule with actuals via FRED.",
+            "Add a free Trading Economics API key (sidebar) to unlock consensus forecasts "
+            "and exact release times for the full 30-day forward calendar. "
+            "Free account at tradingeconomics.com/api. "
+            "Without it, you see the built-in 2025-2026 static schedule enriched with FRED actuals.",
             "info")
 
     cal_hdr, cal_refresh = st.columns([5, 1])
     with cal_hdr:
-        src_label = "FinnHub + FOMC/ECB schedule" if finnhub_key else "FRED data + FOMC/ECB schedule (approx. dates)"
+        src_label = "Trading Economics + CB schedule" if te_api_key else "Static 2025-2026 schedule + FRED actuals"
         st.caption(f"Source: {src_label}")
     with cal_refresh:
         if st.button("Refresh", key="cal_refresh", use_container_width=True):
@@ -681,7 +682,7 @@ with tab_cal:
         for e in today_evts:
             _cal_row(e, is_today=True)
 
-    st.markdown(f"### Upcoming {'(next 45 days)' if finnhub_key else '(approximate, next 60 days)'}")
+    st.markdown(f"### Upcoming {'(next 45 days, Trading Economics)' if te_api_key else '(next 60 days, static schedule)'}")
     st.caption("HIGH = high impact · MED = medium impact · ~ = approximate release date")
     _cal_header()
 
@@ -703,7 +704,7 @@ with tab_cal:
             _cal_row(e)
 
     if recent_evts:
-        st.markdown("### Recent Releases (past 21 days)")
+        st.markdown("### Recent Releases (past 30 days)")
         _cal_header()
         for e in recent_evts:
             _cal_row(e)
@@ -712,7 +713,7 @@ with tab_cal:
     st.caption(
         "Beat/Miss logic: Inflation (CPI, PCE, HICP) — actual > forecast = HOTTER (hawkish); "
         "actual < forecast = COOLER (dovish). Growth/jobs — actual > forecast = BEAT; "
-        "actual < forecast = MISS. Consensus forecasts require FinnHub API key."
+        "actual < forecast = MISS. Consensus forecasts available with Trading Economics API key."
     )
 
 
@@ -1383,6 +1384,6 @@ Copper decoupling from equities = growth crack forming
 
 st.markdown(
     '<p style="font-size:10px;color:#1A2540;text-align:center;margin-top:28px">'
-    'FRED · Yahoo Finance · CoinGecko · mempool.space · Alternative.me · FinnHub (optional) · '
+    'FRED · Yahoo Finance · CoinGecko · mempool.space · Alternative.me · Trading Economics (optional) · '
     'For informational purposes only. Not investment advice.</p>',
     unsafe_allow_html=True)
