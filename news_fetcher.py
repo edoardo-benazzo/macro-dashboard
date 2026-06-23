@@ -1,6 +1,6 @@
 """
-Macro news fetcher — pulls from free RSS feeds and classifies each
-headline by its market impact (hawkish, dovish, risk-off, etc.).
+Macro news fetcher — pulls from free RSS feeds, classifies each headline
+by market impact, and labels it MACRO or GEOPOLITICAL.
 No API key required.
 """
 
@@ -15,10 +15,15 @@ import streamlit as st
 # ── RSS feed sources ──────────────────────────────────────────────────────────
 
 FEEDS = [
-    {"url": "https://feeds.reuters.com/reuters/businessNews",      "source": "REUTERS"},
-    {"url": "https://www.cnbc.com/id/20910258/device/rss/rss.html","source": "CNBC"},
-    {"url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse", "source": "MARKETWATCH"},
-    {"url": "https://www.investing.com/rss/news.rss",              "source": "INVESTING.COM"},
+    # Macro / markets
+    {"url": "https://feeds.reuters.com/reuters/businessNews",        "source": "REUTERS",     "category": "MACRO"},
+    {"url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",  "source": "CNBC",        "category": "MACRO"},
+    {"url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse", "source": "MARKETWATCH", "category": "MACRO"},
+    {"url": "https://www.investing.com/rss/news.rss",                "source": "INVESTING",   "category": "MACRO"},
+    # Geopolitical
+    {"url": "https://feeds.bbci.co.uk/news/world/rss.xml",           "source": "BBC WORLD",   "category": "GEOPOLITICAL"},
+    {"url": "https://feeds.reuters.com/reuters/worldNews",           "source": "REUTERS",     "category": "GEOPOLITICAL"},
+    {"url": "https://www.theguardian.com/world/rss",                 "source": "GUARDIAN",    "category": "GEOPOLITICAL"},
 ]
 
 # ── Impact classification ─────────────────────────────────────────────────────
@@ -96,8 +101,7 @@ IMPACT_CATEGORIES = {
     "crypto": {
         "keywords": [
             "bitcoin", " btc ", "crypto", "cryptocurrency", "digital asset",
-            "microstrategy", "mstr", "blockchain", "halving", "spot etf",
-            "ethereum", "defi", "stablecoin",
+            "blockchain", "halving", "spot etf", "ethereum", "defi", "stablecoin",
         ],
         "label": "CRYPTO", "css_class": "badge-btc",
     },
@@ -111,15 +115,21 @@ def _strip_html(text: str) -> str:
 
 
 def _time_ago(pub: datetime) -> str:
+    """Return a human-readable elapsed time string, e.g. '34 minutes ago' or '2 hours ago'."""
     if pub.tzinfo is None:
         pub = pub.replace(tzinfo=timezone.utc)
     diff = datetime.now(timezone.utc) - pub
-    s = diff.total_seconds()
+    s = int(diff.total_seconds())
+    if s < 60:
+        return "just now"
     if s < 3600:
-        return f"{int(s / 60)}m ago"
+        m = s // 60
+        return f"{m} minute ago" if m == 1 else f"{m} minutes ago"
     if s < 86400:
-        return f"{int(s / 3600)}h ago"
-    return f"{int(s / 86400)}d ago"
+        h = s // 3600
+        return f"{h} hour ago" if h == 1 else f"{h} hours ago"
+    d = s // 86400
+    return f"{d} day ago" if d == 1 else f"{d} days ago"
 
 
 def _parse_date(date_str: str) -> datetime:
@@ -136,10 +146,10 @@ def _classify(title: str, description: str) -> list[str]:
     for cat_key, cat in IMPACT_CATEGORIES.items():
         if any(kw in text for kw in cat["keywords"]):
             matches.append(cat_key)
-    return matches[:4]  # cap at 4 tags
+    return matches[:4]
 
 
-def _parse_feed(url: str, source: str, timeout: int = 8) -> list[dict]:
+def _parse_feed(url: str, source: str, category: str, timeout: int = 8) -> list[dict]:
     try:
         resp = requests.get(
             url, timeout=timeout,
@@ -151,15 +161,16 @@ def _parse_feed(url: str, source: str, timeout: int = 8) -> list[dict]:
         if channel is None:
             return []
         items = []
-        for item in channel.findall("item")[:15]:
-            title   = _strip_html(item.findtext("title",       ""))
-            desc    = _strip_html(item.findtext("description", ""))[:280]
-            link    = (item.findtext("link", "") or "").strip()
-            pub     = _parse_date(item.findtext("pubDate", ""))
+        for item in channel.findall("item")[:12]:
+            title = _strip_html(item.findtext("title",       ""))
+            desc  = _strip_html(item.findtext("description", ""))[:280]
+            link  = (item.findtext("link", "") or "").strip()
+            pub   = _parse_date(item.findtext("pubDate", ""))
             if not title:
                 continue
             items.append({
                 "source":   source,
+                "category": category,
                 "title":    title,
                 "desc":     desc,
                 "link":     link,
@@ -172,18 +183,17 @@ def _parse_feed(url: str, source: str, timeout: int = 8) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=60 * 30)  # 30-minute cache
+@st.cache_data(ttl=60 * 30)
 def fetch_all_macro_news() -> list[dict]:
-    """Aggregate macro news from all RSS sources, sorted newest-first."""
+    """Aggregate news from all RSS sources, sorted newest-first, deduplicated."""
     all_items = []
     for feed in FEEDS:
-        all_items.extend(_parse_feed(feed["url"], feed["source"]))
+        all_items.extend(_parse_feed(feed["url"], feed["source"], feed["category"]))
     all_items.sort(key=lambda x: x["pub"], reverse=True)
-    # Deduplicate by title similarity
     seen, unique = set(), []
     for item in all_items:
         slug = re.sub(r"\W+", "", item["title"].lower())[:60]
         if slug not in seen:
             seen.add(slug)
             unique.append(item)
-    return unique[:40]
+    return unique[:60]

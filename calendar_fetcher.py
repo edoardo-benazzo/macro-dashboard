@@ -43,8 +43,8 @@ BOE_DATES = [
 # next_release_days: days from last FRED observation date to estimated next release
 # (monthly obs dates are first of month; interval accounts for release lag)
 # impact_type: "inflation" | "growth" | "labor"
-# For inflation: actual > estimate = 🔴 hawkish surprise
-# For growth/labor: actual > estimate = 🟢 upside surprise
+# For inflation: actual > estimate = HOTTER (hawkish surprise)
+# For growth/labor: actual > estimate = BEAT (upside surprise)
 
 FRED_RELEASE_CONFIG = {
     "US CPI (YoY)":          {"key": "cpi_yoy",        "interval": 70, "impact": "inflation",  "importance": "high",   "country": "US"},
@@ -66,18 +66,18 @@ FRED_RELEASE_CONFIG = {
 
 # ── Impact coloring ────────────────────────────────────────────────────────────
 
-_COUNTRY_FLAGS = {"US": "🇺🇸", "EU": "🇪🇺", "GB": "🇬🇧", "DE": "🇩🇪", "FR": "🇫🇷",
-                   "JP": "🇯🇵", "CN": "🇨🇳", "CA": "🇨🇦", "AU": "🇦🇺"}
-_IMPORTANCE_DOT = {"high": "🔴", "medium": "🟡", "low": "⚪"}
+_COUNTRY_LABELS  = {"US": "US", "EU": "EU", "GB": "UK", "DE": "DE", "FR": "FR",
+                    "JP": "JP", "CN": "CN", "CA": "CA", "AU": "AU"}
+_IMPORTANCE_LABELS = {"high": "HIGH", "medium": "MED", "low": "LOW"}
 
 
 def beat_miss_label(actual, forecast, impact_type: str) -> str | None:
     """
     Returns colored label based on whether the actual beat or missed expectations.
-    For inflation:  actual > forecast = 🔴 HOTTER  (hawkish, bad for bonds/risk)
-    For inflation:  actual < forecast = 🟢 COOLER  (dovish, good for bonds)
-    For growth/jobs: actual > forecast = 🟢 BEAT
-    For growth/jobs: actual < forecast = 🔴 MISS
+    For inflation:  actual > forecast = HOTTER  (hawkish, bad for bonds/risk)
+    For inflation:  actual < forecast = COOLER  (dovish, good for bonds)
+    For growth/jobs: actual > forecast = BEAT
+    For growth/jobs: actual < forecast = MISS
     For labor (unemployment): inverted — higher = bad
     """
     if actual is None or forecast is None:
@@ -89,13 +89,13 @@ def beat_miss_label(actual, forecast, impact_type: str) -> str | None:
     diff = a - f
     tol  = abs(f) * 0.05 if f else 0.05  # 5% relative tolerance = "in-line"
     if abs(diff) <= tol:
-        return "⚪ IN-LINE"
+        return "IN-LINE"
     if impact_type == "inflation":
-        return "🔴 HOTTER" if diff > 0 else "🟢 COOLER"
+        return "HOTTER" if diff > 0 else "COOLER"
     elif impact_type == "labor":
-        return "🔴 MISS" if diff > 0 else "🟢 BEAT"   # higher unemployment = bad
+        return "MISS" if diff > 0 else "BEAT"
     else:
-        return "🟢 BEAT" if diff > 0 else "🔴 MISS"
+        return "BEAT" if diff > 0 else "MISS"
 
 
 def _fmt_val(v, key: str = "") -> str:
@@ -324,8 +324,8 @@ def get_calendar(fred_data: dict | None, finnhub_key: str | None = None) -> tupl
 
 
 def flag(country: str) -> str:
-    return _COUNTRY_FLAGS.get(country.upper(), "🌐")
+    return _COUNTRY_LABELS.get(country.upper(), country.upper())
 
 
 def importance_dot(level: str) -> str:
-    return _IMPORTANCE_DOT.get(level.lower(), "⚪")
+    return _IMPORTANCE_LABELS.get(level.lower(), level.upper())
