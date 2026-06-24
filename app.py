@@ -852,7 +852,7 @@ if "news_read" not in st.session_state:
     st.session_state.news_read = set()
 
 with tab_news:
-    with st.spinner("Fetching news from 14 feeds..."):
+    with st.spinner("Fetching news from 38 feeds..."):
         _news = fetch_all_news()
     all_articles = _news["articles"]
     _fetched_at  = dt.datetime.fromisoformat(_news["fetched_at"])
@@ -898,7 +898,11 @@ with tab_news:
                 fetch_all_news.clear(); st.rerun()
 
         # ── Apply filters ─────────────────────────────────────────────────
-        pool = list(all_articles)
+        # Re-sort explicitly: importance DESC → newest first within tier
+        pool = sorted(
+            all_articles,
+            key=lambda a: (-a.get("importance", 1), -a["pub"].timestamp()),
+        )
 
         if search_q:
             sq = search_q.strip().lower()
@@ -950,37 +954,47 @@ with tab_news:
                 earnings = get_earnings_calendar()
 
             if not earnings:
-                st.caption("No earnings data available.")
+                st.caption(
+                    "Earnings dates temporarily unavailable — yfinance data may be delayed. "
+                    "Check earnings.com or finance.yahoo.com for current schedules."
+                )
             else:
-                _today = dt.date.today()
-                _groups = [
-                    ("THIS WEEK",  [e for e in earnings if 0 <= e["days"] <= 7],  "#1A6EFF"),
-                    ("THIS MONTH", [e for e in earnings if 8 <= e["days"] <= 30], "#8BA0B8"),
-                    ("LATER",      [e for e in earnings if e["days"] > 30],       "#374A5E"),
-                ]
-                for _label, _items, _color in _groups:
-                    if not _items:
-                        continue
-                    st.markdown(
-                        f'<span style="color:{_color};font-size:10px;'
-                        f'font-weight:800;letter-spacing:1px">{_label}</span>',
-                        unsafe_allow_html=True,
+                _upcoming = [e for e in earnings if e["days"] >= 0]
+                if not _upcoming:
+                    st.caption(
+                        "Earnings dates temporarily unavailable — yfinance data may be delayed. "
+                        "Check earnings.com or finance.yahoo.com for current schedules."
                     )
-                    _rows = [
-                        {
-                            "Ticker":   e["ticker"],
-                            "Company":  (e["name"] or e["ticker"])[:28],
-                            "Date":     e["date"].strftime("%b %d"),
-                            "Days":     e["days"],
-                            "EPS Est.": f"${e['eps_est']:.2f}" if e.get("eps_est") is not None else "—",
-                        }
-                        for e in _items
+                else:
+                    _groups = [
+                        ("THIS WEEK",  [e for e in _upcoming if e["days"] <= 7],        "#1A6EFF"),
+                        ("THIS MONTH", [e for e in _upcoming if 8 <= e["days"] <= 30],  "#8BA0B8"),
+                        ("LATER",      [e for e in _upcoming if e["days"] > 30],        "#374A5E"),
                     ]
-                    st.dataframe(
-                        pd.DataFrame(_rows),
-                        hide_index=True,
-                        use_container_width=True,
-                    )
+                    for _label, _items, _color in _groups:
+                        if not _items:
+                            continue
+                        st.markdown(
+                            f'<span style="color:{_color};font-size:10px;'
+                            f'font-weight:800;letter-spacing:1px">{_label}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        _rows = [
+                            {
+                                "Ticker":      e["ticker"],
+                                "Company":     (e["name"] or e["ticker"])[:28],
+                                "Next Earnings": e["date"].strftime("%b %d, %Y"),
+                                "Days Until":  e["days"],
+                                "EPS Est.":    f"${e['eps_est']:.2f}" if e.get("eps_est") is not None else "—",
+                                "Last EPS":    f"${e['eps_last']:.2f}" if e.get("eps_last") is not None else "—",
+                            }
+                            for e in _items
+                        ]
+                        st.dataframe(
+                            pd.DataFrame(_rows),
+                            hide_index=True,
+                            use_container_width=True,
+                        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

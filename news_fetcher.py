@@ -1,6 +1,6 @@
 """
-Macro news fetcher — 14 direct RSS feeds, no Google News middleman.
-48-hour recency filter, 5-minute cache.
+Macro news fetcher — 38 direct + curated RSS feeds.
+48-hour recency filter, 5-minute cache, up to 300 unique articles.
 """
 
 import concurrent.futures
@@ -16,46 +16,144 @@ import streamlit as st
 
 # ── Source credibility tier ───────────────────────────────────────────────────
 _SOURCE_TIER: dict[str, int] = {
-    "REUTERS":    1, "AP":         1, "FED":        1, "ECB":        1,
-    "BBC":        2, "BBC WORLD":  2, "DW":         2, "EURACTIV":   2,
-    "AL JAZEERA": 3, "FORBES":     3, "TECHCRUNCH": 3, "THE VERGE":  3,
+    # Tier 1 — wire / institutional
+    "REUTERS":         1, "AP":              1, "FED":            1,
+    "ECB":             1, "BLOOMBERG":       1,
+    # Tier 2 — quality press
+    "BBC":             2, "BBC WORLD":       2, "DW":             2,
+    "EURACTIV":        2, "WSJ":             2, "FT":             2,
+    "CNBC":            2, "MARKETWATCH":     2, "AXIOS":          2,
+    "THE ECONOMIST":   2, "POLITICO":        2, "POLITICO EU":    2,
+    "FOREIGN POLICY":  2, "CFR":             2,
+    # Tier 3 — commentary / general
+    "AL JAZEERA":      3, "FORBES":          3, "TECHCRUNCH":     3,
+    "THE VERGE":       3, "SEEKING ALPHA":   3, "YAHOO FINANCE":  3,
+    "INVESTING.COM":   3, "EURONEWS":        3, "TASS":           3,
+    "KYIV INDEPENDENT": 3,
 }
 
 SOURCE_TIER_COLOR: dict[int, str] = {
-    1: "#E2E8F0",   # wire / institutional — bright
-    2: "#8BA0B8",   # quality press — medium
-    3: "#4A607A",   # commentary — dim
+    1: "#E2E8F0",   # wire / institutional — bright white
+    2: "#8BA0B8",   # quality press — medium grey
+    3: "#4A607A",   # commentary — dim grey
 }
 
-# ── Direct feed definitions (no Google News middleman) ────────────────────────
+# ── Feed definitions ──────────────────────────────────────────────────────────
 FEEDS = [
-    # Central Banks
+    # ── Central Banks ───────────────────────────────────────────────────
     {"url": "https://www.federalreserve.gov/feeds/press_all.xml",
      "source": "FED",        "default_category": "CENTRAL BANKS"},
     {"url": "https://www.ecb.europa.eu/rss/press.html",
      "source": "ECB",        "default_category": "CENTRAL BANKS"},
-    # Macro / Markets / World
+
+    # ── Reuters (direct + Google News for gated sections) ──────────────
     {"url": "https://feeds.reuters.com/reuters/businessNews",
      "source": "REUTERS",    "default_category": "MACRO"},
     {"url": "https://feeds.reuters.com/Reuters/worldNews",
      "source": "REUTERS",    "default_category": "GEOPOLITICAL"},
     {"url": "https://feeds.reuters.com/reuters/financialNews",
      "source": "REUTERS",    "default_category": "MARKETS"},
+    {"url": ("https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com"
+             "+politics+OR+sanctions+OR+war+OR+conflict+OR+election"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "REUTERS",    "default_category": "GEOPOLITICAL"},
+
+    # ── AP ──────────────────────────────────────────────────────────────
     {"url": "https://apnews.com/index.rss",
      "source": "AP",         "default_category": "GEOPOLITICAL"},
     {"url": "https://apnews.com/apf-businessnews",
      "source": "AP",         "default_category": "MACRO"},
+    {"url": "https://apnews.com/world-news",
+     "source": "AP",         "default_category": "GEOPOLITICAL"},
+
+    # ── BBC ─────────────────────────────────────────────────────────────
     {"url": "https://feeds.bbci.co.uk/news/business/rss.xml",
      "source": "BBC",        "default_category": "MACRO"},
     {"url": "https://feeds.bbci.co.uk/news/world/rss.xml",
      "source": "BBC WORLD",  "default_category": "GEOPOLITICAL"},
+    {"url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
+     "source": "BBC WORLD",  "default_category": "GEOPOLITICAL"},
+    {"url": "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
+     "source": "BBC WORLD",  "default_category": "GEOPOLITICAL"},
+    {"url": "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
+     "source": "BBC WORLD",  "default_category": "GEOPOLITICAL"},
+
+    # ── WSJ ─────────────────────────────────────────────────────────────
+    {"url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+     "source": "WSJ",        "default_category": "MARKETS"},
+    {"url": "https://feeds.a.dj.com/rss/RSSEconomy.xml",
+     "source": "WSJ",        "default_category": "MACRO"},
+
+    # ── Bloomberg (via Google News — no public RSS) ─────────────────────
+    {"url": ("https://news.google.com/rss/search?q=when:24h+site:bloomberg.com"
+             "+economy+OR+markets+OR+fed+OR+ecb+OR+inflation"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "BLOOMBERG",  "default_category": "MARKETS"},
+
+    # ── FT (via Google News) ────────────────────────────────────────────
+    {"url": ("https://news.google.com/rss/search?q=when:24h+site:ft.com"
+             "+economy+OR+markets+OR+inflation+OR+fed+OR+ecb"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "FT",         "default_category": "MACRO"},
+
+    # ── The Economist (via Google News) ─────────────────────────────────
+    {"url": ("https://news.google.com/rss/search?q=when:24h+site:economist.com"
+             "+economy+OR+finance+OR+markets"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "THE ECONOMIST", "default_category": "MACRO"},
+
+    # ── CNBC ────────────────────────────────────────────────────────────
+    {"url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+     "source": "CNBC",       "default_category": "MACRO"},
+    {"url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
+     "source": "CNBC",       "default_category": "MARKETS"},
+
+    # ── MarketWatch ─────────────────────────────────────────────────────
+    {"url": "https://feeds.marketwatch.com/marketwatch/economy-politics/",
+     "source": "MARKETWATCH", "default_category": "MACRO"},
+
+    # ── Yahoo Finance ───────────────────────────────────────────────────
+    {"url": "https://finance.yahoo.com/news/rssindex",
+     "source": "YAHOO FINANCE", "default_category": "MARKETS"},
+
+    # ── Axios Markets ───────────────────────────────────────────────────
+    {"url": "https://api.axios.com/feed/markets",
+     "source": "AXIOS",      "default_category": "MARKETS"},
+
+    # ── Seeking Alpha Economy ───────────────────────────────────────────
+    {"url": "https://seekingalpha.com/feed/economy.xml",
+     "source": "SEEKING ALPHA", "default_category": "MACRO"},
+
+    # ── Investing.com (via Google News) ─────────────────────────────────
+    {"url": ("https://news.google.com/rss/search?q=when:24h+site:investing.com"
+             "+macro+OR+central+bank+OR+inflation+OR+GDP"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "INVESTING.COM", "default_category": "MACRO"},
+
+    # ── Geopolitical ────────────────────────────────────────────────────
     {"url": "https://www.aljazeera.com/xml/rss/all.xml",
      "source": "AL JAZEERA", "default_category": "GEOPOLITICAL"},
     {"url": "https://rss.dw.com/xml/rss-en-all",
      "source": "DW",         "default_category": "GEOPOLITICAL"},
     {"url": "https://www.euractiv.com/feed/",
      "source": "EURACTIV",   "default_category": "MACRO"},
-    # Tech / AI
+    {"url": "https://www.politico.com/rss/politics08.xml",
+     "source": "POLITICO",   "default_category": "GEOPOLITICAL"},
+    {"url": "https://www.politico.eu/feed/",
+     "source": "POLITICO EU", "default_category": "GEOPOLITICAL"},
+    {"url": ("https://news.google.com/rss/search?q=when:24h+site:foreignpolicy.com"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "FOREIGN POLICY", "default_category": "GEOPOLITICAL"},
+    {"url": "https://www.cfr.org/rss.xml",
+     "source": "CFR",        "default_category": "GEOPOLITICAL"},
+    {"url": "https://feeds.feedburner.com/euronews/en/news/",
+     "source": "EURONEWS",   "default_category": "GEOPOLITICAL"},
+    {"url": "https://tass.com/rss/v2.xml",
+     "source": "TASS",       "default_category": "GEOPOLITICAL"},
+    {"url": "https://kyivindependent.com/feed/",
+     "source": "KYIV INDEPENDENT", "default_category": "GEOPOLITICAL"},
+
+    # ── Tech / AI ───────────────────────────────────────────────────────
     {"url": "https://techcrunch.com/feed",
      "source": "TECHCRUNCH", "default_category": "TECH & AI"},
     {"url": "https://www.theverge.com/rss/index.xml",
@@ -82,40 +180,51 @@ def _is_noise(title: str) -> bool:
 
 
 # ── Auto-classification ───────────────────────────────────────────────────────
+# Priority order: CENTRAL BANKS > MACRO > GEOPOLITICAL > MARKETS > TECH & AI
+# Default for no match: MARKETS
 _CAT_RULES = [
     ("CENTRAL BANKS", [
-        "federal reserve", "fomc", "fed funds", " ecb ", "european central bank",
-        "bank of england", "bank of japan", " boe ", " boj ", "rate decision",
-        "basis points", "monetary policy", "central bank", "interest rate hike",
-        "interest rate cut", "quantitative easing", "quantitative tightening",
-        "powell", "lagarde", "rate hike", "rate cut", "fed meeting",
-        "ecb rate", "ecb meeting",
-    ]),
-    ("GEOPOLITICAL", [
-        " war ", "conflict", "sanction", "geopolit", "trade war", "tariff",
-        "military ", "troops", "missile", "nato ", "ceasefire", "invasion",
-        "armed forces", "nuclear", "coup ", "diplomacy", "attack on",
-        "election result", "vote ", "treaty",
+        " fed ", "federal reserve", "fomc", " ecb ", "european central bank",
+        " boe ", "bank of england", " boj ", "bank of japan", "central bank",
+        "rate decision", "interest rate", "monetary policy", "rate hike",
+        "rate cut", "hawkish", "dovish", "basis points",
+        "quantitative easing", "quantitative tightening", "jerome powell",
+        "christine lagarde", "andrew bailey", "rate meeting", "policy meeting",
+        "bond buying", "tapering", "balance sheet",
     ]),
     ("MACRO", [
-        " cpi ", " pce ", " ppi ", "inflation", " gdp ", " nfp ",
-        "nonfarm", "payroll", " pmi ", "trade balance", "retail sales",
-        "unemployment", "jobs report", "recession", "consumer price",
-        "producer price", "economic growth", "jobless claims", "jolts",
-        "industrial output", "core inflation",
+        "inflation", " cpi ", " pce ", "hicp", " gdp ", "growth", "recession",
+        "unemployment", " jobs ", "payroll", " nfp ", "nonfarm", " pmi ",
+        "manufacturing", "retail sales", "trade balance", "trade deficit",
+        "trade surplus", "fiscal", "budget", "deficit", "sovereign",
+        "yield curve", "economic data", "economic growth", "economic slowdown",
+        "output", "productivity", "supply chain", "commodity prices",
+        "energy prices", "food prices", "housing", "real estate", "mortgage",
+        "consumer confidence", " ism ", "industrial production", "factory",
+        "export", "import", "current account", "treasury",
     ]),
-    ("TECH & AI", [
-        "artificial intelligence", " ai ", "ai model", "ai chip",
-        "nvidia", "openai", "semiconductor", "chipmaker", "chatgpt",
-        "machine learning", "deepseek", "anthropic", "google deepmind",
-        "large language model", "generative ai", "silicon valley",
+    ("GEOPOLITICAL", [
+        " war ", "conflict", "military", "sanctions", "geopolitical", "election",
+        " vote ", "referendum", "coup ", "protest", "unrest", "nuclear", "missile",
+        " attack ", "bombing", "ceasefire", "peace deal", "treaty", "diplomat",
+        "invasion", "occupation", "territory ", "border", "nato ", "un resolution",
+        " g7 ", " g20 ", " opec ", "oil embargo", "trade war", "tariff",
+        "alliance", "security", "terrorism", "extremism", "hostage", "crisis",
     ]),
     ("MARKETS", [
-        "s&p 500", "s&p500", "nasdaq", "dow jones", "treasury yield",
-        "bond yield", "us dollar", "dollar index", "oil price", "gold price",
-        "stock market", "wall street", "equity market", "bear market",
-        "bull market", "market rally", "market selloff", "hedge fund",
-        "etf ", "commodity prices",
+        " stock ", "equity", " shares ", " market ", " index ", "rally", "selloff",
+        "correction", " bull ", " bear ", "volatility", " vix ", "dollar",
+        "currency", "forex", " bonds ", "yield", "spread", "credit",
+        "commodity", " oil ", " gold ", "silver", "copper", "bitcoin", "crypto",
+        " ipo ", "merger", "acquisition", "earnings", "profit", "revenue",
+        "valuation", "hedge fund", "investment bank", "portfolio", " asset ",
+        " fund ", " etf ", "derivatives",
+    ]),
+    ("TECH & AI", [
+        "artificial intelligence", " ai ", "machine learning", "semiconductor",
+        " chip ", "nvidia", "openai", "google ai", "microsoft ai", "automation",
+        "robot", " tech ", "technology", "software", "hardware", "startup",
+        "venture capital", "silicon valley", "data center", "computing", "digital",
     ]),
 ]
 
@@ -125,7 +234,7 @@ def _classify(title: str, desc: str, default: str) -> str:
     for category, keywords in _CAT_RULES:
         if any(kw in text for kw in keywords):
             return category
-    return default
+    return "MARKETS"  # never leave uncategorized
 
 
 # ── Importance scoring (3=HIGH · 2=MED · 1=LOW) ──────────────────────────────
@@ -272,6 +381,15 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _clean_title(title: str, feed_url: str) -> str:
+    """Strip 'Article Title - Publisher' suffix from Google News feeds."""
+    if "news.google.com" in feed_url and " - " in title:
+        parts = title.rsplit(" - ", 1)
+        if len(parts) == 2 and len(parts[1]) < 50:
+            return parts[0].strip()
+    return title
+
+
 # ── Deduplication (≥60% word overlap within 3h → same story) ─────────────────
 _STOP_WORDS = frozenset({
     "the", "a", "an", "is", "are", "was", "were", "in", "on", "at",
@@ -356,6 +474,7 @@ def _parse_feed(url: str, source: str, default_category: str,
         if root.tag == f"{{{_ATOM_NS}}}feed":
             for entry in root.findall(f"{{{_ATOM_NS}}}entry")[:15]:
                 title = _strip_html(entry.findtext(f"{{{_ATOM_NS}}}title", ""))
+                title = _clean_title(title, url)
                 link_el = entry.find(f"{{{_ATOM_NS}}}link")
                 link = link_el.get("href", "") if link_el is not None else ""
                 pub_str = (entry.findtext(f"{{{_ATOM_NS}}}published") or
@@ -373,6 +492,7 @@ def _parse_feed(url: str, source: str, default_category: str,
             channel = root.find("channel") or root
             for item in channel.findall("item")[:15]:
                 title = _strip_html(item.findtext("title", ""))
+                title = _clean_title(title, url)
                 link  = (item.findtext("link", "") or "").strip()
                 pub   = _parse_date(item.findtext("pubDate", ""))
                 if pub is None or pub < cutoff:
@@ -389,7 +509,7 @@ def _parse_feed(url: str, source: str, default_category: str,
 @st.cache_data(ttl=60 * 5)
 def fetch_all_news() -> dict:
     """
-    Fetch, filter (48h), deduplicate, and score articles.
+    Fetch, filter (48h), deduplicate, and score articles from 38 feeds.
     Returns {"articles": [...], "fetched_at": ISO timestamp string}.
     Articles sorted HIGH → MED → LOW, newest first within each tier.
     """
@@ -405,9 +525,9 @@ def fetch_all_news() -> dict:
             feed["url"], feed["source"], feed["default_category"], cutoff
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
         futures = [ex.submit(_fetch, f) for f in FEEDS]
-        for fut in concurrent.futures.as_completed(futures, timeout=25):
+        for fut in concurrent.futures.as_completed(futures, timeout=30):
             try:
                 all_items.extend(fut.result())
             except Exception:
@@ -417,6 +537,6 @@ def fetch_all_news() -> dict:
     unique.sort(key=lambda a: (-a["importance"], -a["pub"].timestamp()))
 
     return {
-        "articles":   unique[:120],
+        "articles":   unique[:300],
         "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }

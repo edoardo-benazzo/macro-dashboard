@@ -2,6 +2,7 @@
 All data-fetching logic lives here, isolated from the UI code in app.py.
 """
 
+import concurrent.futures
 import datetime as dt
 
 import pandas as pd
@@ -293,71 +294,125 @@ def series_trend(series: pd.Series, periods: int = 3) -> float | None:
     s = series.dropna() if series is not None else pd.Series(dtype=float)
     if len(s) < periods + 1:
         return None
+    return s.iloc[-1] - s.iloc[-(periods + 1)]
 
 
 # ── Earnings calendar ─────────────────────────────────────────────────────────
 
 _EARNINGS_TICKERS = [
+    # Mega-cap tech
     "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA",
-    "JPM", "BAC", "GS", "MS", "BLK", "AMD", "INTC", "AVGO",
-    "MU", "TSM", "ASML", "XOM", "CVX", "LLY", "V", "MA",
+    # Financials
+    "JPM", "BAC", "GS", "MS", "BLK",
+    # Semiconductors
+    "AMD", "INTC", "AVGO", "MU", "TSM", "ASML",
+    "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "MRVL", "ARM", "SMCI",
+    # Energy
+    "XOM", "CVX",
+    # Healthcare
+    "LLY",
+    # Payments
+    "V", "MA",
+    # Consumer / retail
+    "WMT", "COST", "HD", "TGT",
+    # Media / streaming / platforms
+    "DIS", "NFLX", "UBER", "SHOP", "PLTR",
 ]
+
+
+def _fetch_one_earnings(ticker: str, today: dt.date) -> dict | None:
+    try:
+        t = yf.Ticker(ticker)
+        info: dict = {}
+        earn_date: dt.date | None = None
+
+        # Fetch info once (covers methods 1, 2, and EPS)
+        try:
+            info = t.info or {}
+        except Exception:
+            pass
+
+        # Method 1: calendar dict
+        try:
+            cal = t.calendar
+            if cal is not None:
+                if hasattr(cal, "to_dict"):
+                    cal = cal.to_dict()
+                if isinstance(cal, dict):
+                    raw_dates = cal.get("Earnings Date", [])
+                    if raw_dates:
+                        dates_list = (
+                            list(raw_dates)
+                            if hasattr(raw_dates, "__iter__") and not isinstance(raw_dates, str)
+                            else [raw_dates]
+                        )
+                        raw = dates_list[0]
+                        if hasattr(raw, "date"):
+                            earn_date = raw.date()
+                        elif isinstance(raw, str):
+                            earn_date = dt.date.fromisoformat(str(raw)[:10])
+        except Exception:
+            pass
+
+        # Method 2: info dict keys
+        if earn_date is None:
+            for key in ("earningsDate", "earningsTimestamp"):
+                raw = info.get(key)
+                if raw is None:
+                    continue
+                try:
+                    if isinstance(raw, (int, float)):
+                        earn_date = dt.date.fromtimestamp(raw)
+                    elif hasattr(raw, "date"):
+                        earn_date = raw.date()
+                    elif isinstance(raw, str):
+                        earn_date = dt.date.fromisoformat(str(raw)[:10])
+                    if earn_date:
+                        break
+                except Exception:
+                    pass
+
+        # Method 3: earnings_dates DataFrame
+        if earn_date is None:
+            try:
+                ed_df = t.earnings_dates
+                if ed_df is not None and not ed_df.empty:
+                    future = [d.date() for d in ed_df.index if d.date() >= today]
+                    if future:
+                        earn_date = min(future)
+            except Exception:
+                pass
+
+        if earn_date is None:
+            return None
+
+        return {
+            "ticker":    ticker,
+            "name":      info.get("shortName", ticker) or ticker,
+            "date":      earn_date,
+            "days":      (earn_date - today).days,
+            "eps_est":   info.get("forwardEps"),
+            "eps_last":  info.get("trailingEps"),
+        }
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=60 * 60 * 6)
 def get_earnings_calendar() -> list[dict]:
-    """Return upcoming earnings for 23 major tickers, sorted by days until."""
+    """Return upcoming earnings for watched tickers, sorted by days until."""
     today = dt.date.today()
     result: list[dict] = []
 
-    for ticker in _EARNINGS_TICKERS:
-        try:
-            t = yf.Ticker(ticker)
-            cal = t.calendar
-            info = t.fast_info
-
-            if cal is None:
-                continue
-
-            # Normalize: yfinance may return dict or DataFrame
-            if hasattr(cal, "to_dict"):
-                cal = cal.to_dict()
-
-            earn_dates = cal.get("Earnings Date", [])
-            if not earn_dates:
-                continue
-
-            if hasattr(earn_dates, "__iter__") and not isinstance(earn_dates, str):
-                earn_dates = list(earn_dates)
-            else:
-                earn_dates = [earn_dates]
-
-            raw = earn_dates[0]
-            if hasattr(raw, "date"):
-                earn_date = raw.date()
-            elif isinstance(raw, str):
-                earn_date = dt.date.fromisoformat(str(raw)[:10])
-            else:
-                continue
-
-            days_until = (earn_date - today).days
-            eps_est = cal.get("Earnings Average", cal.get("EPS Estimate"))
-
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_fetch_one_earnings, t, today): t for t in _EARNINGS_TICKERS}
+        for fut in concurrent.futures.as_completed(futures, timeout=90):
             try:
-                name = yf.Ticker(ticker).info.get("shortName", ticker)
+                r = fut.result()
+                if r is not None:
+                    result.append(r)
             except Exception:
-                name = ticker
-
-            result.append({
-                "ticker":   ticker,
-                "name":     name,
-                "date":     earn_date,
-                "days":     days_until,
-                "eps_est":  eps_est,
-            })
-        except Exception:
-            pass
+                pass
 
     result.sort(key=lambda x: x["days"])
     return result
-    return s.iloc[-1] - s.iloc[-(periods + 1)]
