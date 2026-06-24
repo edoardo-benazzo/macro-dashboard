@@ -21,7 +21,7 @@ from data_fetchers import (
     credit_spread_status, classify_macro_regime, classify_eu_macro_regime,
     compute_correlation_matrix, compute_zscore, zscore_label,
     compute_real_fed_funds, compute_btp_bund_spread, btp_bund_status,
-    compute_recession_probability, series_trend,
+    compute_recession_probability, series_trend, get_earnings_calendar,
 )
 from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR
 from crypto_fetchers import (
@@ -394,106 +394,98 @@ def _render_articles(articles: list, tab_key: str = "all"):
     read_set: set = st.session_state.get("news_read", set())
 
     for art in articles:
-        cat      = art.get("category", "MACRO")
-        src      = art.get("source", "")
-        time_ago = art.get("time_ago", "")
-        link     = art.get("link", "")
-        imp      = art.get("importance", 1)
-        mi       = art.get("market_impact")
-        tier     = art.get("source_tier", 3)
-        art_id   = article_id(art)
-        is_read  = art_id in read_set
+        cat   = art.get("category", "MACRO")
+        src   = art.get("source", "")
+        ta    = art.get("time_ago", "")
+        link  = art.get("link", "")
+        imp   = art.get("importance", 1)
+        mi    = art.get("market_impact")
+        tier  = art.get("source_tier", 3)
+        sc    = art.get("source_count", 1)
+        aid   = article_id(art)
+        is_rd = aid in read_set
 
-        # Sanitize title — strip ALL HTML tags, normalize whitespace
         title = _re.sub(r"<[^>]+>", " ", art.get("title", ""))
         title = _re.sub(r"\s+", " ", title).strip()
 
-        # Visual config
-        _border, bg_c, text_c, ring_c = _NEWS_STYLE.get(cat, _NEWS_FALLBACK)
+        bdr, bg_c, txt_c, ring_c = _NEWS_STYLE.get(cat, _NEWS_FALLBACK)
         src_color = SOURCE_TIER_COLOR.get(tier, "#4A607A")
-        imp_label = {3: "HIGH", 2: "MED"}.get(imp, "")
-        dim = "opacity:0.45;" if is_read else ""
+        dim = "opacity:0.45;" if is_rd else ""
 
-        # ── Line 1: [CATEGORY] [HIGH/MED] [SOURCE]    [TIME] [✓] ─────
-        c1, c2, c3, _gap, c4, c5 = st.columns([1.8, 0.75, 1.5, 2.2, 1.3, 0.55])
+        if imp == 3:
+            imp_h = ('<span style="background:rgba(41,121,255,.2);color:#6FA8FF;'
+                     'border:1px solid rgba(41,121,255,.4);padding:1px 5px;'
+                     'border-radius:2px;font-size:9px;font-weight:700;'
+                     'white-space:nowrap">HIGH</span> ')
+        elif imp == 2:
+            imp_h = ('<span style="background:rgba(100,116,139,.12);color:#8BA0B8;'
+                     'border:1px solid rgba(100,116,139,.25);padding:1px 5px;'
+                     'border-radius:2px;font-size:9px;font-weight:700;'
+                     'white-space:nowrap">MED</span> ')
+        else:
+            imp_h = ""
 
-        with c1:
-            st.markdown(
-                f'<span style="{dim}background:{bg_c};color:{text_c};'
-                f'border:1px solid {ring_c};padding:2px 7px;border-radius:3px;'
-                f'font-size:9px;font-weight:800;letter-spacing:0.6px">{cat}</span>',
-                unsafe_allow_html=True,
-            )
-        with c2:
-            if imp_label:
-                if imp == 3:
-                    ibg, itc, ibc = "rgba(41,121,255,.2)", "#6FA8FF", "rgba(41,121,255,.4)"
-                else:
-                    ibg, itc, ibc = "rgba(100,116,139,.12)", "#8BA0B8", "rgba(100,116,139,.25)"
+        sc_h = (
+            f'<span style="font-size:8px;color:#374A5E;background:#0D1521;'
+            f'padding:1px 4px;border-radius:2px;border:1px solid #1A2540;'
+            f'margin-left:4px">{sc}&nbsp;src</span>'
+            if sc >= 2 else ""
+        )
+
+        cat_d  = cat.replace("&", "&amp;")
+        safe_t = (title.replace("&", "&amp;").replace("<", "&lt;")
+                       .replace(">", "&gt;").replace('"', "&quot;"))
+        safe_l = link.replace('"', "%22") if link else ""
+        hl_c   = "#E2E8F0" if imp == 3 else "#C5D0DC" if imp == 2 else "#7A8FA8"
+        hl_w   = "700" if imp == 3 else "600" if imp == 2 else "500"
+
+        if safe_l:
+            hl_h = (f'<a href="{safe_l}" target="_blank" style="color:{hl_c};'
+                    f'text-decoration:none;font-weight:{hl_w};font-size:13px">'
+                    f'{safe_t}</a>')
+        else:
+            hl_h = f'<span style="color:{hl_c};font-weight:{hl_w};font-size:13px">{safe_t}</span>'
+
+        card = (
+            f'<div style="{dim}border-left:3px solid {bdr};padding:4px 4px 4px 8px;margin:1px 0">'
+            f'<div style="display:flex;align-items:center;gap:4px;flex-wrap:nowrap;'
+            f'overflow:hidden;line-height:1.1">'
+            f'<span style="background:{bg_c};color:{txt_c};border:1px solid {ring_c};'
+            f'padding:1px 5px;border-radius:2px;font-size:9px;font-weight:800;'
+            f'white-space:nowrap">{cat_d}</span>'
+            f'{imp_h}'
+            f'<span style="color:{src_color};font-size:10px;font-weight:700;'
+            f'white-space:nowrap">{src}</span>'
+            f'<span style="color:#374A5E;font-size:10px;margin-left:auto;'
+            f'white-space:nowrap">{ta}{sc_h}</span>'
+            f'</div>'
+            f'<div style="margin:3px 0 0">{hl_h}</div>'
+            f'</div>'
+        )
+
+        c_main, c_btn = st.columns([20, 1])
+        with c_main:
+            st.markdown(card, unsafe_allow_html=True)
+            if mi and imp >= 2:
                 st.markdown(
-                    f'<span style="{dim}background:{ibg};color:{itc};'
-                    f'border:1px solid {ibc};padding:2px 5px;border-radius:3px;'
-                    f'font-size:9px;font-weight:700">{imp_label}</span>',
+                    f'<div style="padding-left:11px;font-size:10.5px;color:#4A7A9B;'
+                    f'margin:-2px 0 3px">{_add_tv_links(mi)}</div>',
                     unsafe_allow_html=True,
                 )
-        with c3:
-            st.markdown(
-                f'<span style="{dim}color:{src_color};font-size:10px;'
-                f'font-weight:700;letter-spacing:0.3px">{src}</span>',
-                unsafe_allow_html=True,
-            )
-        with c4:
-            st.markdown(
-                f'<span style="{dim}color:#374A5E;font-size:10px">{time_ago}</span>',
-                unsafe_allow_html=True,
-            )
-        with c5:
+        with c_btn:
             if st.button(
-                "↩" if is_read else "✓",
-                key=f"rd_{tab_key}_{art_id}",
-                help="Mark unread" if is_read else "Mark read",
+                "↩" if is_rd else "✓",
+                key=f"rd_{tab_key}_{aid}",
+                help="Mark unread" if is_rd else "Mark read",
             ):
-                if is_read:
-                    st.session_state.news_read.discard(art_id)
+                if is_rd:
+                    st.session_state.news_read.discard(aid)
                 else:
-                    st.session_state.news_read.add(art_id)
+                    st.session_state.news_read.add(aid)
                 st.rerun()
 
-        # ── Line 2: headline link ─────────────────────────────────────
-        safe_title = (
-            title
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-        )
-        safe_link  = link.replace('"', "%22") if link else ""
-        hl_weight  = "700" if imp == 3 else "600" if imp == 2 else "500"
-        hl_color   = "#E2E8F0" if imp == 3 else "#C5D0DC" if imp == 2 else "#7A8FA8"
-
-        if safe_link:
-            st.markdown(
-                f'<a href="{safe_link}" target="_blank" style="{dim}'
-                f'color:{hl_color};text-decoration:none;font-weight:{hl_weight};'
-                f'font-size:13px;line-height:1.45;display:block;margin:2px 0 4px">'
-                f'{safe_title}</a>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f'<span style="{dim}color:{hl_color};font-weight:{hl_weight};'
-                f'font-size:13px">{safe_title}</span>',
-                unsafe_allow_html=True,
-            )
-
-        # ── Line 3: market impact (plain text only) ───────────────────
-        if mi and imp >= 2:
-            clean_mi = _re.sub(r"<[^>]+>", "", mi)
-            st.caption(clean_mi)
-
-        # ── Separator ─────────────────────────────────────────────────
         st.markdown(
-            '<hr style="border:none;border-top:1px solid #0E1C30;margin:4px 0">',
+            '<hr style="border:none;border-top:1px solid #0E1C30;margin:3px 0">',
             unsafe_allow_html=True,
         )
 
@@ -860,26 +852,30 @@ if "news_read" not in st.session_state:
     st.session_state.news_read = set()
 
 with tab_news:
-    # ── Header row ────────────────────────────────────────────────────────
-    hdr_col, ref_col = st.columns([5, 1])
-    with hdr_col:
-        st.caption("Live · Auto-classified · 15-min cache")
-    with ref_col:
-        if st.button("Refresh", key="news_refresh", use_container_width=True):
-            fetch_all_news.clear(); st.rerun()
-
     with st.spinner("Fetching news from 14 feeds..."):
-        all_articles = fetch_all_news()
+        _news = fetch_all_news()
+    all_articles = _news["articles"]
+    _fetched_at  = dt.datetime.fromisoformat(_news["fetched_at"])
 
     if not all_articles:
         _alert("Could not fetch news — check network or try refreshing.", "warning")
     else:
-        # ── Control bar ───────────────────────────────────────────────────
-        f1, f2, f3, f4 = st.columns([3, 4, 2, 2])
+        # ── Debug / status line ───────────────────────────────────────────
+        _now_utc    = dt.datetime.now(dt.timezone.utc)
+        _oldest     = min(a["pub"] for a in all_articles)
+        _oldest_hr  = int((_now_utc - _oldest).total_seconds() / 3600)
+        _refresh_m  = max(0, int((_now_utc - _fetched_at).total_seconds() / 60))
+        st.caption(
+            f"{len(all_articles)} articles · last 48h · "
+            f"oldest: {_oldest_hr} hr ago · updated {_refresh_m} min ago"
+        )
+
+        # ── Control bar (one line) ────────────────────────────────────────
+        f1, f2, f3, f4, f5 = st.columns([3.5, 4.5, 1.2, 0.8, 0.8])
         with f1:
             imp_filter = st.radio(
-                "Importance",
-                ["Tier 1 + 2", "Tier 1 Only", "All Stories"],
+                "Tier",
+                ["Tier 1+2", "Tier 1 Only", "All Stories"],
                 horizontal=True, index=0,
                 label_visibility="collapsed",
                 key="news_imp_filter",
@@ -892,14 +888,17 @@ with tab_news:
         with f3:
             show_unread = st.toggle("New Only", key="news_unread_toggle")
         with f4:
-            if st.button("Clear", key="news_mark_all",
-                         use_container_width=True):
+            if st.button("Clear", key="news_mark_all", use_container_width=True):
                 for a in all_articles:
                     st.session_state.news_read.add(article_id(a))
                 st.rerun()
+        with f5:
+            if st.button("⟳", key="news_refresh", use_container_width=True,
+                         help="Refresh news"):
+                fetch_all_news.clear(); st.rerun()
 
         # ── Apply filters ─────────────────────────────────────────────────
-        pool = list(all_articles)  # already sorted high→low importance, newest first
+        pool = list(all_articles)
 
         if search_q:
             sq = search_q.strip().lower()
@@ -909,18 +908,18 @@ with tab_news:
 
         if imp_filter == "Tier 1 Only":
             pool = [a for a in pool if a.get("importance", 1) == 3]
-        elif imp_filter == "Tier 1 + 2":
+        elif imp_filter == "Tier 1+2":
             pool = [a for a in pool if a.get("importance", 1) >= 2]
 
         if show_unread:
-            read_set = st.session_state.news_read
-            pool = [a for a in pool if article_id(a) not in read_set]
+            _rs = st.session_state.news_read
+            pool = [a for a in pool if article_id(a) not in _rs]
 
         # ── Category tabs ─────────────────────────────────────────────────
         (n_all, n_cb, n_macro, n_geo,
-         n_mkt, n_tech) = st.tabs([
+         n_mkt, n_tech, n_earn) = st.tabs([
             "All", "Central Banks", "Macro",
-            "Geopolitical", "Markets", "Tech & AI",
+            "Geopolitical", "Markets", "Tech & AI", "Earnings",
         ])
 
         with n_all:
@@ -945,6 +944,43 @@ with tab_news:
         with n_tech:
             _render_articles([a for a in pool
                               if a.get("category") == "TECH & AI"], "tech")
+
+        with n_earn:
+            with st.spinner("Loading earnings calendar..."):
+                earnings = get_earnings_calendar()
+
+            if not earnings:
+                st.caption("No earnings data available.")
+            else:
+                _today = dt.date.today()
+                _groups = [
+                    ("THIS WEEK",  [e for e in earnings if 0 <= e["days"] <= 7],  "#1A6EFF"),
+                    ("THIS MONTH", [e for e in earnings if 8 <= e["days"] <= 30], "#8BA0B8"),
+                    ("LATER",      [e for e in earnings if e["days"] > 30],       "#374A5E"),
+                ]
+                for _label, _items, _color in _groups:
+                    if not _items:
+                        continue
+                    st.markdown(
+                        f'<span style="color:{_color};font-size:10px;'
+                        f'font-weight:800;letter-spacing:1px">{_label}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    _rows = [
+                        {
+                            "Ticker":   e["ticker"],
+                            "Company":  (e["name"] or e["ticker"])[:28],
+                            "Date":     e["date"].strftime("%b %d"),
+                            "Days":     e["days"],
+                            "EPS Est.": f"${e['eps_est']:.2f}" if e.get("eps_est") is not None else "—",
+                        }
+                        for e in _items
+                    ]
+                    st.dataframe(
+                        pd.DataFrame(_rows),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

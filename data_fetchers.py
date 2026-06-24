@@ -293,4 +293,71 @@ def series_trend(series: pd.Series, periods: int = 3) -> float | None:
     s = series.dropna() if series is not None else pd.Series(dtype=float)
     if len(s) < periods + 1:
         return None
+
+
+# ── Earnings calendar ─────────────────────────────────────────────────────────
+
+_EARNINGS_TICKERS = [
+    "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA",
+    "JPM", "BAC", "GS", "MS", "BLK", "AMD", "INTC", "AVGO",
+    "MU", "TSM", "ASML", "XOM", "CVX", "LLY", "V", "MA",
+]
+
+
+@st.cache_data(ttl=60 * 60 * 6)
+def get_earnings_calendar() -> list[dict]:
+    """Return upcoming earnings for 23 major tickers, sorted by days until."""
+    today = dt.date.today()
+    result: list[dict] = []
+
+    for ticker in _EARNINGS_TICKERS:
+        try:
+            t = yf.Ticker(ticker)
+            cal = t.calendar
+            info = t.fast_info
+
+            if cal is None:
+                continue
+
+            # Normalize: yfinance may return dict or DataFrame
+            if hasattr(cal, "to_dict"):
+                cal = cal.to_dict()
+
+            earn_dates = cal.get("Earnings Date", [])
+            if not earn_dates:
+                continue
+
+            if hasattr(earn_dates, "__iter__") and not isinstance(earn_dates, str):
+                earn_dates = list(earn_dates)
+            else:
+                earn_dates = [earn_dates]
+
+            raw = earn_dates[0]
+            if hasattr(raw, "date"):
+                earn_date = raw.date()
+            elif isinstance(raw, str):
+                earn_date = dt.date.fromisoformat(str(raw)[:10])
+            else:
+                continue
+
+            days_until = (earn_date - today).days
+            eps_est = cal.get("Earnings Average", cal.get("EPS Estimate"))
+
+            try:
+                name = yf.Ticker(ticker).info.get("shortName", ticker)
+            except Exception:
+                name = ticker
+
+            result.append({
+                "ticker":   ticker,
+                "name":     name,
+                "date":     earn_date,
+                "days":     days_until,
+                "eps_est":  eps_est,
+            })
+        except Exception:
+            pass
+
+    result.sort(key=lambda x: x["days"])
+    return result
     return s.iloc[-1] - s.iloc[-(periods + 1)]
