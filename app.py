@@ -24,7 +24,7 @@ from data_fetchers import (
     compute_recession_probability, compute_positioning_implication,
     compute_policy_tracker, series_trend, get_earnings_calendar,
 )
-from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR
+from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR, detect_todays_releases
 from crypto_fetchers import (
     fetch_btc_coingecko, fetch_crypto_global, fetch_fear_greed,
     fetch_btc_hashrate, fetch_btc_history,
@@ -1036,7 +1036,7 @@ if "news_read" not in st.session_state:
     st.session_state.news_read = set()
 
 with tab_news:
-    with st.spinner("Fetching news from 38 feeds..."):
+    with st.spinner("Fetching news from 52 feeds..."):
         _news = fetch_all_news()
     all_articles = _news["articles"]
     _fetched_at  = dt.datetime.fromisoformat(_news["fetched_at"])
@@ -1053,6 +1053,18 @@ with tab_news:
             f"{len(all_articles)} articles · last 48h · "
             f"oldest: {_oldest_hr} hr ago · updated {_refresh_m} min ago"
         )
+
+        # ── Today's key releases banner ───────────────────────────────────
+        _releases = detect_todays_releases(all_articles)
+        if _releases:
+            st.markdown(
+                f'<div style="border-left:3px solid #FFA502;background:rgba(255,165,2,0.07);'
+                f'border-radius:4px;padding:6px 12px;margin-bottom:6px;'
+                f'font-size:11px;font-weight:600;color:#FFA502">'
+                f'TODAY: {" · ".join(_releases)}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
         # ── Control bar (one line) ────────────────────────────────────────
         f1, f2, f3, f4, f5 = st.columns([3.5, 4.5, 1.2, 0.8, 0.8])

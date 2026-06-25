@@ -1,5 +1,5 @@
 """
-Macro news fetcher — 38 direct + curated RSS feeds.
+Macro news fetcher — 52 direct + curated RSS feeds.
 48-hour recency filter, 5-minute cache, up to 300 unique articles.
 """
 
@@ -16,20 +16,25 @@ import streamlit as st
 
 # ── Source credibility tier ───────────────────────────────────────────────────
 _SOURCE_TIER: dict[str, int] = {
-    # Tier 1 — wire / institutional
+    # Tier 1 — wire / institutional / government
     "REUTERS":         1, "AP":              1, "FED":            1,
     "ECB":             1, "BLOOMBERG":       1,
-    # Tier 2 — quality press
+    "BLS":             1, "BEA":             1, "US TREASURY":    1,
+    "IMF":             1, "WORLD BANK":      1,
+    # Tier 2 — quality press / analysis
     "BBC":             2, "BBC WORLD":       2, "DW":             2,
     "EURACTIV":        2, "WSJ":             2, "FT":             2,
     "CNBC":            2, "MARKETWATCH":     2, "AXIOS":          2,
     "THE ECONOMIST":   2, "POLITICO":        2, "POLITICO EU":    2,
     "FOREIGN POLICY":  2, "CFR":             2,
+    "MIT TECH REVIEW": 2, "WIRED":           2, "ARS TECHNICA":   2,
+    "IEEE SPECTRUM":   2, "WAR ON THE ROCKS":2, "BELLINGCAT":     2,
+    "RAND":            2,
     # Tier 3 — commentary / general
     "AL JAZEERA":      3, "FORBES":          3, "TECHCRUNCH":     3,
     "THE VERGE":       3, "SEEKING ALPHA":   3, "YAHOO FINANCE":  3,
     "INVESTING.COM":   3, "EURONEWS":        3, "TASS":           3,
-    "KYIV INDEPENDENT": 3,
+    "KYIV INDEPENDENT": 3, "VENTUREBEAT":    3,
 }
 
 SOURCE_TIER_COLOR: dict[int, str] = {
@@ -158,6 +163,40 @@ FEEDS = [
      "source": "TECHCRUNCH", "default_category": "TECH & AI"},
     {"url": "https://www.theverge.com/rss/index.xml",
      "source": "THE VERGE",  "default_category": "TECH & AI"},
+    {"url": "https://www.technologyreview.com/feed/",
+     "source": "MIT TECH REVIEW", "default_category": "TECH & AI"},
+    {"url": "https://www.wired.com/feed/category/artificial-intelligence/latest/rss",
+     "source": "WIRED",      "default_category": "TECH & AI"},
+    {"url": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+     "source": "ARS TECHNICA", "default_category": "TECH & AI"},
+    {"url": "https://venturebeat.com/category/ai/feed/",
+     "source": "VENTUREBEAT", "default_category": "TECH & AI"},
+    {"url": "https://spectrum.ieee.org/feeds/feed.rss",
+     "source": "IEEE SPECTRUM", "default_category": "TECH & AI"},
+
+    # ── Macro Data (government / institutional) ──────────────────────────
+    {"url": "https://www.bls.gov/feed/rss_latest.xml",
+     "source": "BLS",        "default_category": "MACRO"},
+    {"url": "https://www.bea.gov/rss/data.xml",
+     "source": "BEA",        "default_category": "MACRO"},
+    {"url": "https://home.treasury.gov/news/press-releases.rss",
+     "source": "US TREASURY", "default_category": "MACRO"},
+    {"url": "https://www.imf.org/en/News/rss?language=eng",
+     "source": "IMF",        "default_category": "MACRO"},
+    {"url": "https://feeds.worldbank.org/worldbank/blogs/all",
+     "source": "WORLD BANK", "default_category": "MACRO"},
+    {"url": ("https://news.google.com/rss/search?q=when:24h+"
+             "(CPI+inflation+OR+Fed+rate+OR+GDP+OR+payrolls+OR+ECB+rate)"
+             "&hl=en&gl=US&ceid=US:en"),
+     "source": "REUTERS",    "default_category": "MACRO"},
+
+    # ── Geopolitical (analysis / verification) ───────────────────────────
+    {"url": "https://warontherocks.com/feed/",
+     "source": "WAR ON THE ROCKS", "default_category": "GEOPOLITICAL"},
+    {"url": "https://www.bellingcat.com/feed/",
+     "source": "BELLINGCAT", "default_category": "GEOPOLITICAL"},
+    {"url": "https://www.rand.org/pubs/rss.xml",
+     "source": "RAND",       "default_category": "GEOPOLITICAL"},
 ]
 
 # ── Noise blocklist ───────────────────────────────────────────────────────────
@@ -238,6 +277,25 @@ def _classify(title: str, desc: str, default: str) -> str:
 
 
 # ── Importance scoring (3=HIGH · 2=MED · 1=LOW) ──────────────────────────────
+
+# These phrases indicate an actual data release result → always HIGH
+_FORCE_HIGH_PHRASES = [
+    "cpi rose", "cpi fell", "cpi came in", "cpi data",
+    "inflation rose", "inflation fell", "inflation data",
+    "jobs report", "payrolls added", "nonfarm payrolls",
+    "unemployment rate", "jobless rate",
+    "gdp grew", "gdp contracted", "gdp shrank",
+    "pce rose", "pce fell",
+    "retail sales rose", "retail sales fell",
+    "fed raises", "fed cuts", "fed holds",
+    "ecb raises", "ecb cuts", "ecb holds",
+    "rate decision", "basis points",
+    "beats expectations", "misses expectations",
+    "above forecast", "below forecast",
+    "higher than expected", "lower than expected",
+    "above expectations", "below expectations",
+]
+
 _HIGH_KW = [
     "fomc", "fed decision", "rate hike", "rate cut", "ecb decision",
     "ecb rate", "ecb meeting", " cpi ", "inflation print",
@@ -261,11 +319,42 @@ _MEDIUM_KW = [
     "oil prices", "energy crisis",
 ]
 
+# Title patterns that cap importance at MEDIUM even if HIGH keywords present
+_OPINION_CAPS = [
+    "why ", " how ", "what is ", "makes no sense", "the case for",
+    "opinion:", "analysis:", " explained", "what you need to know",
+    "here's why", "here's how", "what we know", "explainer",
+]
+_CLIMATE_CAPS    = ["heat wave", "climate change", "green deal", "emissions", "global warming"]
+_CLIMATE_OK      = ["oil", "gas", "energy prices", "carbon tax", "energy crisis"]
+_HUMANITARIAN_CAPS = ["atrocities", "refugees", "famine", "drought"]
+_HUMANITARIAN_OK   = ["sanctions", "trade route", "commodity supply", "food prices"]
+_POLITICS_CAPS   = ["greens call for", "parliament votes on", "party demands",
+                    "senator says", "lawmakers urge", "calls for inquiry"]
+_POLITICS_OK     = ["central bank", "rate decision", "rate hike", "rate cut",
+                    "fiscal policy", "budget", "tax reform", "debt ceiling"]
+
+
+def _is_importance_capped(text: str) -> bool:
+    """Return True if article should be capped at MEDIUM despite HIGH keywords."""
+    if any(p in text for p in _OPINION_CAPS):
+        return True
+    if any(p in text for p in _CLIMATE_CAPS) and not any(e in text for e in _CLIMATE_OK):
+        return True
+    if any(p in text for p in _HUMANITARIAN_CAPS) and not any(e in text for e in _HUMANITARIAN_OK):
+        return True
+    if any(p in text for p in _POLITICS_CAPS) and not any(e in text for e in _POLITICS_OK):
+        return True
+    return False
+
 
 def _importance_score(title: str, desc: str = "") -> int:
     text = " " + (title + " " + desc).lower() + " "
-    if any(kw in text for kw in _HIGH_KW):
+    # Actual data release phrases always win
+    if any(ph in text for ph in _FORCE_HIGH_PHRASES):
         return 3
+    if any(kw in text for kw in _HIGH_KW):
+        return 2 if _is_importance_capped(text) else 3
     if any(kw in text for kw in _MEDIUM_KW):
         return 2
     return 1
@@ -503,6 +592,54 @@ def _parse_feed(url: str, source: str, default_category: str,
         return items
     except Exception:
         return []
+
+
+# ── Today's releases detection ────────────────────────────────────────────────
+_RELEASE_PATTERNS: list[tuple[list[str], str]] = [
+    (["cpi rose", "cpi fell", "cpi came in", "cpi data", "cpi print",
+      "consumer price", "consumer prices"], "CPI"),
+    (["nonfarm payroll", "payrolls added", "jobs report", "jobs added",
+      "payroll report", " nfp "], "NFP"),
+    (["gdp grew", "gdp contracted", "gdp shrank", "gdp growth", "gdp report",
+      "gross domestic product"], "GDP"),
+    (["pce rose", "pce fell", "personal consumption expenditure",
+      "pce inflation", "pce data"], "PCE"),
+    (["retail sales rose", "retail sales fell", "retail sales data",
+      "retail sales report"], "Retail Sales"),
+    (["unemployment rate", "jobless rate"], "Unemployment"),
+    (["initial claims", "jobless claims"], "Initial Claims"),
+    ([" pmi ", "purchasing managers"], "PMI"),
+    (["fed raises", "fed cuts", "fed holds", "fomc decision",
+      "federal reserve raises", "federal reserve cuts", "federal reserve holds",
+      "fed rate decision"], "Fed Decision"),
+    (["ecb raises", "ecb cuts", "ecb holds", "ecb decision",
+      "european central bank raises", "european central bank cuts"], "ECB Decision"),
+    (["inflation rose", "inflation fell", "inflation data", "inflation report",
+      "inflation print"], "Inflation"),
+    (["industrial production", "factory output"], "Industrial Production"),
+    (["housing starts", "building permits"], "Housing"),
+    (["trade balance", "trade deficit", "trade surplus"], "Trade Balance"),
+]
+
+
+def detect_todays_releases(articles: list[dict]) -> list[str]:
+    """
+    Scan articles published within the last 24h for known data release signals.
+    Returns a deduplicated list of release names found (preserving order).
+    """
+    cutoff_24h = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+    found: list[str] = []
+    seen: set[str] = set()
+    for art in articles:
+        pub = art.get("pub")
+        if pub is None or pub < cutoff_24h:
+            continue
+        text = " " + (art["title"] + " " + art.get("desc", "")).lower() + " "
+        for triggers, label in _RELEASE_PATTERNS:
+            if label not in seen and any(t in text for t in triggers):
+                found.append(label)
+                seen.add(label)
+    return found
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
