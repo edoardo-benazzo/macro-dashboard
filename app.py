@@ -21,7 +21,8 @@ from data_fetchers import (
     credit_spread_status, classify_macro_regime, classify_eu_macro_regime,
     compute_correlation_matrix, compute_zscore, zscore_label,
     compute_real_fed_funds, compute_btp_bund_spread, btp_bund_status,
-    compute_recession_probability, series_trend, get_earnings_calendar,
+    compute_recession_probability, compute_positioning_implication,
+    compute_policy_tracker, series_trend, get_earnings_calendar,
 )
 from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR
 from crypto_fetchers import (
@@ -578,126 +579,308 @@ with tab_score:
     if fred_data is None:
         _alert("Enter your FRED API key in the sidebar to load macro data.", "info")
     else:
-        cpi_l       = _latest("cpi_yoy");      core_pce_l = _latest("core_pce_yoy")
-        pce_l       = _latest("pce_yoy");      ffr_l      = _latest("fed_funds")
-        y10_l       = _latest("10y_yield");    y2_l       = _latest("2y_yield")
-        y3m_l       = _latest("3m_yield");     real_10y_l = _latest("real_10y")
-        unrate_l    = _latest("unemployment"); cfnai_l    = _latest("cfnai")
-        hy_oas_l    = _latest("hy_oas");       claims_l   = _latest("initial_claims")
-        sent_l      = _latest("consumer_sentiment")
-        eu_hicp_l   = _latest("eu_hicp");      ecb_l      = _latest("ecb_deposit_rate")
-        eu_10y_l    = _latest("eu_10y_yield"); eu_unemp_l = _latest("eu_unemployment")
-        de_10y_l    = _latest("de_10y_yield"); it_10y_l   = _latest("it_10y_yield")
+        # ── data ──────────────────────────────────────────────────────────────
+        cpi_l        = _latest("cpi_yoy");       core_pce_l  = _latest("core_pce_yoy")
+        pce_l        = _latest("pce_yoy");        ffr_l       = _latest("fed_funds")
+        y10_l        = _latest("10y_yield");      y2_l        = _latest("2y_yield")
+        y3m_l        = _latest("3m_yield");       real_10y_l  = _latest("real_10y")
+        bkeven_l     = _latest("breakeven_10y");  unrate_l    = _latest("unemployment")
+        cfnai_l      = _latest("cfnai");          hy_oas_l    = _latest("hy_oas")
+        ig_oas_l     = _latest("ig_oas");         claims_l    = _latest("initial_claims")
+        sent_l       = _latest("consumer_sentiment")
+        eu_hicp_l    = _latest("eu_hicp");        ecb_l       = _latest("ecb_deposit_rate")
+        eu_10y_l     = _latest("eu_10y_yield");   eu_2y_l     = _latest("eu_2y_yield")
+        eu_unemp_l   = _latest("eu_unemployment")
+        de_10y_l     = _latest("de_10y_yield");   it_10y_l    = _latest("it_10y_yield")
 
-        sp2s10s = (y10_l - y2_l)  if (y10_l and y2_l)  else None
-        sp3m10s = (y10_l - y3m_l) if (y10_l and y3m_l) else None
+        sp2s10s    = (y10_l - y2_l)  if (y10_l and y2_l)  else None
+        sp3m10s    = (y10_l - y3m_l) if (y10_l and y3m_l) else None
+        real_ffr_l = round(ffr_l - cpi_l, 2) if (ffr_l and cpi_l) else None
+        hy_ig_ratio = round(hy_oas_l / ig_oas_l, 2) if (hy_oas_l and ig_oas_l and ig_oas_l > 0) else None
+
+        _vix_df  = (market_data.get("^VIX") or {}).get("df")
+        _vix_snp = latest_snapshot(_vix_df)
+        vix_l    = float(_vix_snp[0]) if _vix_snp else None
+
         sahm    = compute_sahm_rule(_s("unemployment"))
         regime  = classify_macro_regime(cfnai_l, cpi_l)
         credit  = credit_spread_status(hy_oas_l)
         eu_reg  = classify_eu_macro_regime(eu_hicp_l, eu_unemp_l)
         btp_bps = (it_10y_l - de_10y_l) * 100 if (it_10y_l and de_10y_l) else None
         btp_st  = btp_bund_status(btp_bps)
-        rec     = compute_recession_probability(sp2s10s, sp3m10s, sahm["value"], hy_oas_l, cfnai_l)
+        rec     = compute_recession_probability(sp2s10s, sp3m10s, sahm["value"], hy_oas_l, cfnai_l, ffr_l)
+        positioning = compute_positioning_implication(
+            regime, rec["probability"], sp2s10s, sp3m10s, hy_oas_l, real_10y_l, vix_l, ffr_l)
+        policy = compute_policy_tracker(ffr_l, y2_l, ecb_l, eu_2y_l)
+
+        _ts = dt.datetime.now().strftime("%H:%M:%S")
+        st.caption(f"Last updated: {_ts} · Signals from FRED + Yahoo Finance · Recession model: 6-factor composite")
+
+        # ── regime cards ──────────────────────────────────────────────────────
+        _REGIME_META = {
+            "goldilocks":     {"color": "#00C896", "bg": "rgba(0,200,150,0.08)"},
+            "reflation":      {"color": "#FFA502", "bg": "rgba(255,165,2,0.08)"},
+            "stagflation":    {"color": "#FF4757", "bg": "rgba(255,71,87,0.08)"},
+            "deflation_risk": {"color": "#5580FF", "bg": "rgba(85,128,255,0.08)"},
+            "partial":        {"color": "#A0AEC0", "bg": "rgba(160,174,192,0.05)"},
+        }
+
+        def _regime_card(title: str, reg: dict) -> str:
+            rkey  = reg.get("regime") or "partial"
+            meta  = _REGIME_META.get(rkey, _REGIME_META["partial"])
+            label = reg.get("label") or "—"
+            desc  = reg.get("description") or ""
+            return (
+                f'<div style="border-left:4px solid {meta["color"]};'
+                f'background:{meta["bg"]};border-radius:6px;padding:14px 16px;'
+                f'margin-bottom:4px">'
+                f'<div style="font-size:9px;font-weight:700;letter-spacing:0.9px;'
+                f'color:#4A607A;text-transform:uppercase;margin-bottom:6px">{title}</div>'
+                f'<div style="font-size:26px;font-weight:800;color:{meta["color"]};'
+                f'line-height:1.1;margin-bottom:4px">{label}</div>'
+                f'<div style="font-size:11px;color:#A0AEC0">{desc}</div>'
+                f'</div>'
+            )
 
         col_us, col_eu = st.columns(2)
         with col_us:
-            st.markdown(
-                '<p style="font-size:10px;font-weight:700;letter-spacing:0.9px;'
-                'color:#4A607A;text-transform:uppercase;margin-bottom:4px">US Macro Regime</p>',
-                unsafe_allow_html=True)
-            if regime["label"]:
-                st.markdown(
-                    f'<p style="font-size:24px;font-weight:800;margin:4px 0 2px;color:#FFFFFF">'
-                    f'{regime["label"]}</p>', unsafe_allow_html=True)
-                st.caption(regime["description"])
+            st.markdown(_regime_card("US Macro Regime", regime), unsafe_allow_html=True)
         with col_eu:
-            st.markdown(
-                '<p style="font-size:10px;font-weight:700;letter-spacing:0.9px;'
-                'color:#4A607A;text-transform:uppercase;margin-bottom:4px">EU Macro Regime</p>',
-                unsafe_allow_html=True)
-            if eu_reg["label"]:
-                st.markdown(
-                    f'<p style="font-size:24px;font-weight:800;margin:4px 0 2px;color:#FFFFFF">'
-                    f'{eu_reg["label"]}</p>', unsafe_allow_html=True)
-                st.caption(eu_reg["description"])
+            st.markdown(_regime_card("EU Macro Regime", eu_reg), unsafe_allow_html=True)
 
         st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
 
+        # ── recession probability gauge ───────────────────────────────────────
+        st.markdown(
+            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+            'letter-spacing:0.6px;margin-bottom:8px">US RECESSION PROBABILITY</p>',
+            unsafe_allow_html=True)
         if rec["probability"] is not None:
-            rp    = rec["probability"]
-            color = "#FF4757" if rp >= 70 else "#FFA502" if rp >= 40 else "#00C896"
+            rp     = rec["probability"]
+            rcolor = ("#FF4757" if rp >= 80 else "#FF6B35" if rp >= 60
+                      else "#FFA502" if rp >= 40 else "#FFD700" if rp >= 20 else "#00C896")
             st.markdown(
-                f'<p style="font-size:13px;font-weight:700;color:#A0AEC0;margin-bottom:4px">'
-                f'US Recession Probability: '
-                f'<span style="color:{color}">{rec["label"]} — {rp}%</span></p>',
+                f'<div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">'
+                f'<div style="font-size:36px;font-weight:900;color:{rcolor}">{rp}%</div>'
+                f'<div>'
+                f'<div style="font-size:16px;font-weight:700;color:{rcolor}">{rec["label"]}</div>'
+                f'<div style="font-size:11px;color:#4A607A">Based on 6 signals · Updated daily</div>'
+                f'</div></div>'
+                f'<div style="background:#1A2540;border-radius:4px;height:10px;width:100%;margin-bottom:4px">'
+                f'<div style="background:{rcolor};height:10px;border-radius:4px;width:{rp}%"></div>'
+                f'</div>'
+                f'<div style="display:flex;justify-content:space-between;font-size:9px;color:#2D3E56">'
+                f'<span>0% LOW</span><span>20% ELEVATED</span><span>40% MODERATE</span>'
+                f'<span>60% HIGH</span><span>80% VERY HIGH</span><span>100%</span>'
+                f'</div>',
                 unsafe_allow_html=True)
-            c1, _ = st.columns([3, 1])
-            with c1: st.progress(rp / 100)
-            st.caption("Composite: 3m10y spread (30%) · Sahm Rule (25%) · 2s10s (20%) · HY OAS (15%) · CFNAI (10%)")
+            st.caption(
+                "3M10Y spread (25%) · Sahm Rule (25%) · 2s10s (20%) · "
+                "HY OAS (15%) · CFNAI (10%) · FFR vs Neutral (5%)")
 
         st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
 
+        # ── key signals grid ──────────────────────────────────────────────────
         st.markdown(
             '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
             'letter-spacing:0.6px;margin-bottom:8px">KEY SIGNALS</p>',
             unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4)
 
+        def _col_hdr(txt):
+            st.markdown(
+                f'<p style="font-size:9px;font-weight:700;letter-spacing:0.9px;'
+                f'color:#2D3E56;text-transform:uppercase;margin-bottom:6px">{txt}</p>',
+                unsafe_allow_html=True)
+
+        def _num(val, fmt, red_if_above=None, green_if_below=None):
+            if val is None:
+                return "—"
+            color = "#FFFFFF"
+            if red_if_above is not None and val > red_if_above:
+                color = "#FF4757"
+            elif green_if_below is not None and val < green_if_below:
+                color = "#00C896"
+            return f'<span style="color:{color}">{fmt.format(val)}</span>'
+
         with c1:
-            st.markdown('<p style="font-size:9px;font-weight:700;letter-spacing:0.9px;color:#2D3E56;text-transform:uppercase;margin-bottom:6px">Rates</p>', unsafe_allow_html=True)
-            if ffr_l:      st.metric("Fed Funds",   f"{ffr_l:.2f}%")
-            if ecb_l:      st.metric("ECB Rate",    f"{ecb_l:.2f}%")
-            if y10_l:      st.metric("US 10Y",      f"{y10_l:.2f}%")
-            if eu_10y_l:   st.metric("EU 10Y",      f"{eu_10y_l:.2f}%")
-            if real_10y_l: st.metric("Real 10Y",    f"{real_10y_l:.2f}%")
+            _col_hdr("Rates")
+            if ffr_l is not None:
+                st.metric("Fed Funds", f"{ffr_l:.2f}%")
+            if ecb_l is not None:
+                st.metric("ECB Rate",  f"{ecb_l:.2f}%")
+            if y10_l is not None:
+                st.metric("US 10Y",    f"{y10_l:.2f}%")
+            if sp3m10s is not None:
+                st.metric("3M10Y Spread", f"{sp3m10s:.2f}%",
+                          "⚠ Inverted" if sp3m10s < 0 else yield_curve_status(sp3m10s)["label"])
+            if real_ffr_l is not None:
+                st.metric("Real FFR", f"{real_ffr_l:.2f}%",
+                          "Restrictive" if real_ffr_l > 1.0 else "Accommodative" if real_ffr_l < 0 else "Neutral")
+            if real_10y_l is not None:
+                st.metric("Real 10Y TIPS", f"{real_10y_l:.2f}%")
 
         with c2:
-            st.markdown('<p style="font-size:9px;font-weight:700;letter-spacing:0.9px;color:#2D3E56;text-transform:uppercase;margin-bottom:6px">Inflation</p>', unsafe_allow_html=True)
-            if cpi_l:
+            _col_hdr("Inflation")
+            if cpi_l is not None:
                 g = cpi_vs_target(cpi_l)
-                st.metric("US CPI",     f"{cpi_l:.2f}%",    f"{g['gap']:+.2f}pp vs 2%")
-            if pce_l:      st.metric("US PCE",      f"{pce_l:.2f}%")
-            if core_pce_l: st.metric("Core PCE",   f"{core_pce_l:.2f}%")
-            if eu_hicp_l:
+                st.metric("US CPI",    f"{cpi_l:.2f}%",    f"{g['gap']:+.2f}pp vs 2%")
+            if core_pce_l is not None:
+                st.metric("Core PCE",  f"{core_pce_l:.2f}%")
+            if pce_l is not None:
+                st.metric("US PCE",    f"{pce_l:.2f}%")
+            if bkeven_l is not None:
+                st.metric("Breakeven 10Y", f"{bkeven_l:.2f}%",
+                          "Above target" if bkeven_l > 2.5 else "Anchored" if bkeven_l <= 2.5 else None)
+            if eu_hicp_l is not None:
                 g2 = cpi_vs_target(eu_hicp_l)
                 st.metric("EU HICP",   f"{eu_hicp_l:.2f}%", f"{g2['gap']:+.2f}pp vs 2%")
 
         with c3:
-            st.markdown('<p style="font-size:9px;font-weight:700;letter-spacing:0.9px;color:#2D3E56;text-transform:uppercase;margin-bottom:6px">Labor & Growth</p>', unsafe_allow_html=True)
-            if unrate_l:   st.metric("US Unemp.",    f"{unrate_l:.2f}%")
-            if eu_unemp_l: st.metric("EU Unemp.",    f"{eu_unemp_l:.2f}%")
-            if claims_l:   st.metric("Init. Claims", f"{claims_l:,.0f}")
+            _col_hdr("Labor & Growth")
+            if unrate_l is not None:
+                st.metric("US Unemp.",    f"{unrate_l:.2f}%")
+            if eu_unemp_l is not None:
+                st.metric("EU Unemp.",    f"{eu_unemp_l:.2f}%")
+            if claims_l is not None:
+                st.metric("Init. Claims", f"{claims_l:,.0f}")
             if sahm["value"] is not None:
                 st.metric("Sahm Rule", f"{sahm['value']:.2f}pp",
-                          "Triggered" if sahm["triggered"] else "Clear")
+                          "⚠ Triggered" if sahm["triggered"] else "Clear")
             if cfnai_l is not None:
                 st.metric("CFNAI", f"{cfnai_l:.2f}",
                           "Above trend" if cfnai_l > 0 else "Below trend")
 
         with c4:
-            st.markdown('<p style="font-size:9px;font-weight:700;letter-spacing:0.9px;color:#2D3E56;text-transform:uppercase;margin-bottom:6px">Risk Signals</p>', unsafe_allow_html=True)
-            if sp2s10s is not None: st.metric("2s10s",    f"{sp2s10s:.2f}%", yield_curve_status(sp2s10s)["label"])
-            if sp3m10s is not None: st.metric("3m10y",    f"{sp3m10s:.2f}%", yield_curve_status(sp3m10s)["label"])
-            if hy_oas_l is not None: st.metric("HY OAS",  f"{hy_oas_l:.2f}%", credit["label"])
-            if btp_bps is not None: st.metric("BTP-Bund", f"{btp_bps:.0f}bps", btp_st["label"])
-            if sent_l is not None:  st.metric("Sentiment", f"{sent_l:.1f}")
+            _col_hdr("Risk")
+            if sp2s10s is not None:
+                st.metric("2s10s Spread", f"{sp2s10s:.2f}%",
+                          "⚠ Inverted" if sp2s10s < 0 else yield_curve_status(sp2s10s)["label"])
+            if vix_l is not None:
+                vix_label = ("Crisis" if vix_l >= 40 else "Fear" if vix_l >= 30
+                             else "Elevated" if vix_l >= 20 else "Normal" if vix_l >= 15 else "Complacent")
+                st.metric("VIX", f"{vix_l:.1f}", vix_label)
+            if hy_oas_l is not None:
+                st.metric("HY OAS", f"{hy_oas_l:.2f}%", credit["label"])
+            if hy_ig_ratio is not None:
+                st.metric("HY/IG Ratio", f"{hy_ig_ratio:.2f}x",
+                          "Stressed" if hy_ig_ratio > 4.0 else "Elevated" if hy_ig_ratio > 3.0 else "Normal")
+            if btp_bps is not None:
+                st.metric("BTP-Bund", f"{btp_bps:.0f}bps", btp_st["label"])
 
         st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
 
+        # ── Fed & ECB policy tracker ──────────────────────────────────────────
+        st.markdown(
+            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+            'letter-spacing:0.6px;margin-bottom:8px">FED & ECB POLICY TRACKER</p>',
+            unsafe_allow_html=True)
+        _dir_color = {"CUTS": "#00C896", "HIKES": "#FF4757", "HOLD": "#FFA502"}
+
+        def _policy_card(bank: str, rate: float | None, spread: float | None, direction: str | None) -> str:
+            rate_str  = f"{rate:.2f}%" if rate is not None else "—"
+            spr_str   = (f"{spread:+.2f}%" if spread is not None else "—")
+            dir_str   = direction or "—"
+            dcolor    = _dir_color.get(dir_str, "#A0AEC0")
+            spr_label = "2Y yield vs policy rate"
+            return (
+                f'<div style="border:1px solid #1A2540;border-radius:6px;padding:14px 16px">'
+                f'<div style="font-size:9px;font-weight:700;letter-spacing:0.9px;'
+                f'color:#4A607A;text-transform:uppercase;margin-bottom:8px">{bank}</div>'
+                f'<div style="display:flex;justify-content:space-between;align-items:flex-end">'
+                f'<div>'
+                f'<div style="font-size:11px;color:#4A607A">Policy Rate</div>'
+                f'<div style="font-size:24px;font-weight:800;color:#FFFFFF">{rate_str}</div>'
+                f'</div>'
+                f'<div style="text-align:right">'
+                f'<div style="font-size:11px;color:#4A607A">{spr_label}</div>'
+                f'<div style="font-size:16px;font-weight:700;color:#A0AEC0">{spr_str}</div>'
+                f'</div>'
+                f'</div>'
+                f'<div style="margin-top:10px;padding-top:8px;border-top:1px solid #1A2540">'
+                f'<span style="font-size:9px;color:#4A607A;text-transform:uppercase;'
+                f'letter-spacing:0.7px">Market implied next move: </span>'
+                f'<span style="font-size:13px;font-weight:800;color:{dcolor}">{dir_str}</span>'
+                f'</div>'
+                f'</div>'
+            )
+
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            st.markdown(
+                _policy_card("Federal Reserve", policy["fed_funds"],
+                             policy["fed_spread"], policy["fed_direction"]),
+                unsafe_allow_html=True)
+        with pc2:
+            st.markdown(
+                _policy_card("European Central Bank", policy["ecb_rate"],
+                             policy["ecb_spread"], policy["ecb_direction"]),
+                unsafe_allow_html=True)
+        st.caption("Direction inferred from 2Y sovereign yield vs policy rate. "
+                   "Spread < -0.25% → market pricing cuts; > +0.25% → hikes.")
+
+        st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+        # ── market positioning table ──────────────────────────────────────────
+        st.markdown(
+            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+            'letter-spacing:0.6px;margin-bottom:8px">MARKET POSITIONING</p>',
+            unsafe_allow_html=True)
+        _sig_color = {
+            "Bullish": "#00C896", "Cautious": "#FFA502",
+            "Neutral": "#A0AEC0", "Bearish": "#FF4757",
+        }
+        if positioning:
+            rows_html = "".join(
+                f'<tr style="border-bottom:1px solid #1A2540">'
+                f'<td style="padding:8px 12px;font-size:12px;font-weight:600;color:#FFFFFF">{r["asset"]}</td>'
+                f'<td style="padding:8px 12px">'
+                f'<span style="font-size:12px;font-weight:700;color:{_sig_color.get(r["signal"], "#A0AEC0")}">'
+                f'{r["signal"]}</span></td>'
+                f'<td style="padding:8px 12px;font-size:11px;color:#A0AEC0">{r["rationale"]}</td>'
+                f'</tr>'
+                for r in positioning
+            )
+            st.markdown(
+                f'<table style="width:100%;border-collapse:collapse;border:1px solid #1A2540;border-radius:6px">'
+                f'<thead><tr style="border-bottom:2px solid #1A2540">'
+                f'<th style="padding:8px 12px;text-align:left;font-size:9px;font-weight:700;'
+                f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">Asset</th>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:9px;font-weight:700;'
+                f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">Signal</th>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:9px;font-weight:700;'
+                f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">Rationale</th>'
+                f'</tr></thead>'
+                f'<tbody>{rows_html}</tbody>'
+                f'</table>',
+                unsafe_allow_html=True)
+            st.caption("Rule-based signals derived from macro regime, recession probability, and real-time market data.")
+
+        st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+        # ── active alerts ─────────────────────────────────────────────────────
         st.markdown(
             '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
             'letter-spacing:0.6px;margin-bottom:6px">ACTIVE ALERTS</p>',
             unsafe_allow_html=True)
 
         alerts = []
+        if sp3m10s is not None and sp3m10s < 0:
+            alerts.append(("error",   f"3M10Y inverted ({sp3m10s:.2f}%) — Fed's preferred recession signal"))
         if sp2s10s is not None and sp2s10s < 0:
             alerts.append(("error",   f"2s10s yield curve inverted ({sp2s10s:.2f}%)"))
-        if sp3m10s is not None and sp3m10s < 0:
-            alerts.append(("error",   f"3m10y inverted ({sp3m10s:.2f}%) — Fed's preferred recession signal"))
         if sahm["triggered"]:
             alerts.append(("error",   "Sahm Rule triggered — early recession signal"))
-        if rec["probability"] and rec["probability"] >= 40:
+        if rec["probability"] is not None and rec["probability"] >= 60:
+            alerts.append(("error",   f"Recession probability HIGH: {rec['probability']}%"))
+        elif rec["probability"] is not None and rec["probability"] >= 40:
             alerts.append(("warning", f"Recession probability elevated: {rec['probability']}%"))
+        if vix_l is not None and vix_l >= 30:
+            alerts.append(("error",   f"VIX in Fear/Crisis zone: {vix_l:.1f}"))
+        elif vix_l is not None and vix_l >= 20:
+            alerts.append(("warning", f"VIX elevated: {vix_l:.1f}"))
+        if real_ffr_l is not None and real_ffr_l > 2.0:
+            alerts.append(("warning", f"Real Fed Funds highly restrictive: {real_ffr_l:.2f}%"))
         if btp_bps is not None and btp_bps > 250:
             alerts.append(("error",   f"BTP-Bund at fragmentation risk: {btp_bps:.0f}bps"))
         elif btp_bps is not None and btp_bps > 150:
@@ -715,6 +898,7 @@ with tab_score:
             for kind, msg in alerts:
                 _alert(msg, kind)
 
+        # ── next on calendar ──────────────────────────────────────────────────
         if upcoming_evts:
             st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
             st.markdown(

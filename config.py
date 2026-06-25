@@ -42,6 +42,7 @@ US_FRED_SERIES = {
 EU_FRED_SERIES = {
     # ECB & Euro Area aggregate
     "ecb_deposit_rate": ("ECBDFR",             "ECB Deposit Facility Rate",          "%"),
+    "eu_2y_yield":      ("IRLTLT02EZM156N",    "Euro Area 2-Year Gov't Bond Yield",  "%"),
     "eu_10y_yield":     ("IRLTLT01EZM156N",    "Euro Area 10-Year Gov't Bond Yield", "%"),
     "eu_hicp":          ("CP0000EZ19M086NEST", "Euro Area HICP (YoY %)",             "%", "yoy_pct"),
     "eu_unemployment":  ("LRHUTTTTEZM156S",    "Euro Area Unemployment Rate",        "%"),

@@ -234,47 +234,194 @@ def btp_bund_status(spread_bps: float) -> dict:
     else:                  return {"status": "tight",    "label": "Tight"}
 
 
+_NEUTRAL_RATE = 2.5  # standard long-run neutral Fed Funds assumption
+
+
 def compute_recession_probability(
     spread_2s10s: float, spread_3m10s: float,
     sahm_value: float, hy_oas: float, cfnai: float,
+    fed_funds: float = None,
 ) -> dict:
-    score, weight_used = 0.0, 0.0
+    """
+    Multi-factor composite recession probability (0-100).
+    Each signal scored 0-100, then weighted average.
+      3M10Y spread  25% · Sahm Rule  25% · 2S10S  20%
+      HY OAS        15% · CFNAI      10% · FFR vs neutral  5%
+    """
+    signals: list[tuple[int, float]] = []  # (weight, score 0-100)
+
     if spread_3m10s is not None and pd.notna(spread_3m10s):
-        w = 30; weight_used += w
-        if spread_3m10s < -1.0:   score += w
-        elif spread_3m10s < -0.5: score += w * 0.75
-        elif spread_3m10s < 0:    score += w * 0.50
-        elif spread_3m10s < 0.25: score += w * 0.20
-    if spread_2s10s is not None and pd.notna(spread_2s10s):
-        w = 20; weight_used += w
-        if spread_2s10s < -0.5:   score += w
-        elif spread_2s10s < 0:    score += w * 0.65
-        elif spread_2s10s < 0.25: score += w * 0.20
+        s = 100 if spread_3m10s < 0 else 50 if spread_3m10s <= 0.5 else 0
+        signals.append((25, s))
+
     if sahm_value is not None and pd.notna(sahm_value):
-        w = 25; weight_used += w
-        if sahm_value >= 0.50:   score += w
-        elif sahm_value >= 0.30: score += w * 0.60
-        elif sahm_value >= 0.20: score += w * 0.30
-        elif sahm_value >= 0.10: score += w * 0.10
+        s = 100 if sahm_value > 0.5 else 60 if sahm_value >= 0.3 else 0
+        signals.append((25, s))
+
+    if spread_2s10s is not None and pd.notna(spread_2s10s):
+        s = 80 if spread_2s10s < 0 else 40 if spread_2s10s <= 0.25 else 0
+        signals.append((20, s))
+
     if hy_oas is not None and pd.notna(hy_oas):
-        w = 15; weight_used += w
-        if hy_oas > 8:    score += w
-        elif hy_oas > 5:  score += w * 0.70
-        elif hy_oas > 4:  score += w * 0.40
-        elif hy_oas > 3.5:score += w * 0.15
+        s = (100 if hy_oas > 8 else 70 if hy_oas > 5
+             else 30 if hy_oas > 3.5 else 0)
+        signals.append((15, s))
+
     if cfnai is not None and pd.notna(cfnai):
-        w = 10; weight_used += w
-        if cfnai < -0.70:   score += w
-        elif cfnai < -0.35: score += w * 0.60
-        elif cfnai < 0:     score += w * 0.25
-    if weight_used == 0:
+        s = 100 if cfnai < -0.7 else 50 if cfnai < 0 else 0
+        signals.append((10, s))
+
+    if fed_funds is not None and pd.notna(fed_funds):
+        excess = fed_funds - _NEUTRAL_RATE
+        s = 80 if excess > 2.0 else 40 if excess > 1.0 else 0
+        signals.append((5, s))
+
+    if not signals:
         return {"probability": None, "label": None}
-    prob = round((score / weight_used) * 100)
-    if prob >= 70:   label = "High"
-    elif prob >= 40: label = "Elevated"
-    elif prob >= 20: label = "Low-to-Moderate"
+
+    total_w = sum(w for w, _ in signals)
+    prob = round(sum(w * s for w, s in signals) / total_w)
+
+    if prob >= 80:   label = "Very High"
+    elif prob >= 60: label = "High"
+    elif prob >= 40: label = "Moderate"
+    elif prob >= 20: label = "Elevated"
     else:            label = "Low"
+
     return {"probability": prob, "label": label}
+
+
+def compute_positioning_implication(
+    regime: dict, rec_prob: int | None,
+    sp2s10s: float, sp3m10s: float,
+    hy_oas: float, real_10y: float,
+    vix: float, fed_funds: float,
+) -> list[dict]:
+    """Rule-based positioning table derived from real-time signals."""
+    rp = rec_prob or 0
+    rname = regime.get("regime", "") or ""
+    rlabel = regime.get("label", "") or ""
+
+    def _row(asset, signal, rationale):
+        return {"asset": asset, "signal": signal, "rationale": rationale}
+
+    rows = []
+
+    # Equities
+    if rp >= 60 or rname == "stagflation":
+        rows.append(_row("Equities", "Bearish",
+                         f"{rlabel} + recession risk {rp}% — defensive positioning"))
+    elif rp >= 40 or rname == "reflation":
+        rows.append(_row("Equities", "Cautious",
+                         f"{rlabel} — elevated rates headwind, selective"))
+    elif rname == "goldilocks" and rp < 20:
+        rows.append(_row("Equities", "Bullish",
+                         "Goldilocks backdrop — above-trend growth, contained inflation"))
+    else:
+        rows.append(_row("Equities", "Neutral", "Mixed signals — favour quality/defensive"))
+
+    # Gov Bonds
+    if sp3m10s is not None and sp3m10s < 0 and rp >= 40:
+        rows.append(_row("Gov Bonds (US)", "Bullish",
+                         f"Curve inverted ({sp3m10s:.2f}%) + recession risk — duration as hedge"))
+    elif sp2s10s is not None and sp2s10s < 0:
+        rows.append(_row("Gov Bonds (US)", "Cautious",
+                         f"Curve inverted ({sp2s10s:.2f}%) — recession hedge but rate risk"))
+    else:
+        rows.append(_row("Gov Bonds (US)", "Neutral",
+                         "Curve near flat — limited directional edge in duration"))
+
+    # Credit
+    if hy_oas is not None and hy_oas > 5:
+        rows.append(_row("Credit (HY)", "Bearish",
+                         f"HY OAS {hy_oas:.2f}% — spreads elevated, default risk rising"))
+    elif hy_oas is not None and hy_oas < 3.5:
+        rows.append(_row("Credit (HY)", "Cautious",
+                         f"HY OAS {hy_oas:.2f}% — spreads tight, asymmetric downside"))
+    else:
+        rows.append(_row("Credit (HY)", "Neutral", "Spreads within normal range"))
+
+    # Gold
+    if real_10y is not None and real_10y < 0:
+        rows.append(_row("Gold", "Bullish",
+                         f"Negative real yields ({real_10y:.2f}%) support gold"))
+    elif real_10y is not None and real_10y > 2.0:
+        rows.append(_row("Gold", "Bearish",
+                         f"High real yields ({real_10y:.2f}%) compete with gold"))
+    elif rp >= 40:
+        rows.append(_row("Gold", "Bullish",
+                         f"Recession risk {rp}% — safe-haven bid"))
+    else:
+        rows.append(_row("Gold", "Neutral", "Real yields near neutral — no strong edge"))
+
+    # Oil
+    if rname == "stagflation":
+        rows.append(_row("Oil", "Cautious",
+                         "Stagflation — supply constrained but demand destruction risk"))
+    elif rname == "reflation":
+        rows.append(_row("Oil", "Bullish",
+                         "Above-trend growth drives commodity/energy demand"))
+    elif rp >= 50:
+        rows.append(_row("Oil", "Bearish",
+                         f"Recession risk {rp}% — demand destruction likely"))
+    else:
+        rows.append(_row("Oil", "Neutral", "Balanced supply/demand — range-bound"))
+
+    # USD
+    if fed_funds is not None and fed_funds > 4.0 and rp < 40:
+        rows.append(_row("USD (DXY)", "Bullish",
+                         f"High Fed Funds ({fed_funds:.2f}%) — rate differential supportive"))
+    elif rp >= 60:
+        rows.append(_row("USD (DXY)", "Neutral",
+                         "Recession risk — safe-haven bid offset by rate cut pricing"))
+    else:
+        rows.append(_row("USD (DXY)", "Neutral",
+                         "Rate differential supportive, balanced vs growth concerns"))
+
+    # EM Assets
+    if fed_funds is not None and fed_funds > 4.5:
+        rows.append(_row("EM Assets", "Cautious",
+                         f"Strong USD + high US rates ({fed_funds:.2f}%) = EM headwind"))
+    elif rp >= 50:
+        rows.append(_row("EM Assets", "Bearish",
+                         f"Recession risk {rp}% — risk-off, EM capital outflows"))
+    elif rname == "goldilocks":
+        rows.append(_row("EM Assets", "Bullish",
+                         "Goldilocks + contained USD = EM outperformance window"))
+    else:
+        rows.append(_row("EM Assets", "Cautious", "Selective — country-specific risk"))
+
+    return rows
+
+
+def compute_policy_tracker(
+    fed_funds: float, us_2y: float,
+    ecb_rate: float, eu_2y: float,
+) -> dict:
+    """
+    Infer Fed/ECB next-move direction from 2Y yield vs policy rate.
+    Positive spread → market pricing hike; negative → pricing cut.
+    """
+    fed_spread = (us_2y - fed_funds) if (us_2y is not None and fed_funds is not None) else None
+    if fed_spread is not None:
+        fed_dir = "CUTS" if fed_spread < -0.25 else "HIKES" if fed_spread > 0.25 else "HOLD"
+    else:
+        fed_dir = None
+
+    ecb_spread = (eu_2y - ecb_rate) if (eu_2y is not None and ecb_rate is not None) else None
+    if ecb_spread is not None:
+        ecb_dir = "CUTS" if ecb_spread < -0.25 else "HIKES" if ecb_spread > 0.25 else "HOLD"
+    else:
+        ecb_dir = None
+
+    return {
+        "fed_funds":    fed_funds,
+        "fed_spread":   fed_spread,
+        "fed_direction": fed_dir,
+        "ecb_rate":     ecb_rate,
+        "ecb_spread":   ecb_spread,
+        "ecb_direction": ecb_dir,
+    }
 
 
 def compute_correlation_matrix(price_data: dict, tickers: list,
