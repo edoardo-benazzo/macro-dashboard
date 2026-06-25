@@ -5,6 +5,7 @@ Data: FRED · Yahoo Finance · CoinGecko · mempool.space · Alternative.me
 """
 
 import datetime as dt
+import hashlib
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -387,6 +388,10 @@ def _add_tv_links(text: str) -> str:
     return "".join(parts)
 
 
+# NOTE: all interactive widget keys must be globally unique.
+# Use url_hash + tab_key + loop_idx pattern for any widget
+# inside article render loops. Never use article title or
+# index alone as a key.
 def _render_articles(articles: list, tab_key: str = "all"):
     if not articles:
         st.caption("No articles in this category yet.")
@@ -394,7 +399,7 @@ def _render_articles(articles: list, tab_key: str = "all"):
 
     read_set: set = st.session_state.get("news_read", set())
 
-    for art in articles:
+    for idx, art in enumerate(articles):
         cat   = art.get("category", "MACRO")
         src   = art.get("source", "")
         ta    = art.get("time_ago", "")
@@ -405,6 +410,10 @@ def _render_articles(articles: list, tab_key: str = "all"):
         sc    = art.get("source_count", 1)
         aid   = article_id(art)
         is_rd = aid in read_set
+
+        url = art.get("url", link)
+        _hash = hashlib.md5(f"{url}{tab_key}{idx}".encode()).hexdigest()[:12]
+        button_key = f"btn_{_hash}"
 
         title = _re.sub(r"<[^>]+>", " ", art.get("title", ""))
         title = _re.sub(r"\s+", " ", title).strip()
@@ -476,7 +485,7 @@ def _render_articles(articles: list, tab_key: str = "all"):
         with c_btn:
             if st.button(
                 "↩" if is_rd else "✓",
-                key=f"rd_{tab_key}_{aid}",
+                key=button_key,
                 help="Mark unread" if is_rd else "Mark read",
             ):
                 if is_rd:
@@ -997,7 +1006,8 @@ with tab_cal:
     _cal_header()
 
     imp_filter = st.multiselect("Filter by importance", ["high", "medium", "low"],
-                                 default=["high", "medium"], label_visibility="collapsed")
+                                 default=["high", "medium"], label_visibility="collapsed",
+                                 key="cal_imp_filter")
     filtered_up = [e for e in upcoming_evts if e["importance"] in imp_filter]
     if not filtered_up:
         _alert("No upcoming events matching the current filter.", "info")
