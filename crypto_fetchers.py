@@ -15,10 +15,68 @@ import yfinance as yf
 _CG_HEADERS = {"User-Agent": "MacroDashboard/2.0", "Accept": "application/json"}
 
 _ANNUAL_ISSUANCE = 164_250   # 3.125 BTC/block × 144 blocks/day × 365
-_ATH             = 109_000   # hardcoded all-time high (update as needed)
-_HALVING_PRICE   = 63_000    # approximate BTC price on halving day Apr 19 2024
+_ATH             = 126_198   # Cycle 5 ATH — Oct 6 2025
+_JAN25_HIGH      = 109_350   # Jan 2025 local high
+_100K_LEVEL      = 100_000   # psychological level
+_CYCLE4_ATH      = 69_044    # Nov 2021 cycle 4 peak
+_HALVING_PRICE   = 63_210    # BTC price on halving day Apr 20 2024
 _CYCLE_LOW       = 15_476    # Nov 21 2022 cycle low
-_REALIZED_PRICE  = 40_000    # approximate realized price (on-chain cost basis)
+_REALIZED_PRICE  = 53_300    # approx on-chain cost basis (update periodically)
+_MVRV_REALIZED   = 52_000    # realized price used for MVRV calculation
+
+
+@st.cache_data(ttl=60 * 1)
+def fetch_btc_bybit() -> dict:
+    """
+    Current BTC price from Bybit public API (no key needed). 1-minute cache.
+    Falls back to CoinGecko simple price if Bybit is unavailable.
+    """
+    ts = dt.datetime.now(dt.timezone.utc).isoformat()
+    try:
+        r = requests.get(
+            "https://api.bybit.com/v5/market/tickers",
+            params={"category": "spot", "symbol": "BTCUSDT"},
+            headers={"User-Agent": "MacroDashboard/2.0"}, timeout=8,
+        )
+        r.raise_for_status()
+        lst = r.json().get("result", {}).get("list", [])
+        if lst:
+            t = lst[0]
+            price = float(t.get("lastPrice", 0) or 0)
+            if price > 0:
+                pct_raw = float(t.get("price24hPcnt", 0) or 0)
+                return {
+                    "price":      price,
+                    "change_24h": pct_raw * 100,          # Bybit returns decimal fraction
+                    "high_24h":   float(t.get("highPrice24h", 0) or 0),
+                    "low_24h":    float(t.get("lowPrice24h",  0) or 0),
+                    "volume_24h": float(t.get("turnover24h",  0) or 0),
+                    "source":     "Bybit",
+                    "fetched_at": ts,
+                }
+    except Exception:
+        pass
+    # Fallback: CoinGecko simple price
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin", "vs_currencies": "usd",
+                    "include_24hr_change": "true", "include_24hr_vol": "true"},
+            headers=_CG_HEADERS, timeout=8,
+        )
+        r.raise_for_status()
+        btc = r.json().get("bitcoin", {})
+        if btc.get("usd"):
+            return {
+                "price":      btc["usd"],
+                "change_24h": btc.get("usd_24h_change"),
+                "volume_24h": btc.get("usd_24h_vol"),
+                "source":     "CoinGecko",
+                "fetched_at": ts,
+            }
+    except Exception:
+        pass
+    return {"fetched_at": ts}
 
 
 @st.cache_data(ttl=60 * 2)
@@ -255,20 +313,20 @@ def compute_btc_technicals(df: pd.DataFrame) -> dict:
 
 def halving_cycle_info() -> dict:
     """4-year cycle position, phase label, and progress."""
-    LAST_HALVING       = dt.date(2024, 4, 19)
+    LAST_HALVING       = dt.date(2024, 4, 20)   # block 840,000
     LAST_HALVING_BLOCK = 840_000
-    NEXT_HALVING       = dt.date(2028, 4, 17)
+    NEXT_HALVING       = dt.date(2028, 4, 17)   # estimated
     today        = dt.date.today()
     days_since   = (today - LAST_HALVING).days
     cycle_days   = (NEXT_HALVING - LAST_HALVING).days
     days_to_next = max(0, (NEXT_HALVING - today).days)
     pct_through  = min(100.0, days_since / cycle_days * 100)
 
-    if   days_since < 365:  label = "Accumulation / Early Bull"
-    elif days_since < 547:  label = "Bull Market Peak Zone"
-    elif days_since < 730:  label = "Distribution / Late Bull"
+    if   days_since < 365:  label = "Early Bull"
+    elif days_since < 548:  label = "Bull Market Peak Zone"
+    elif days_since < 730:  label = "Post-Peak / Early Bear"
     elif days_since < 1095: label = "Bear Market"
-    else:                   label = "Accumulation / Pre-Halving"
+    else:                   label = "Pre-Halving Accumulation"
 
     return {
         "last_halving":        LAST_HALVING.isoformat(),
