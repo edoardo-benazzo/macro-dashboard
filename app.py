@@ -27,9 +27,10 @@ from data_fetchers import (
 )
 from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR, detect_todays_releases
 from crypto_fetchers import (
-    fetch_btc_coingecko, fetch_crypto_global, fetch_fear_greed,
-    fetch_btc_hashrate, fetch_btc_history,
-    compute_btc_technicals, halving_cycle_info,
+    fetch_btc_price, fetch_btc_coingecko, fetch_crypto_global, fetch_fear_greed,
+    fetch_btc_hashrate, fetch_btc_history, fetch_blockchain_info, fetch_btc_cg_history,
+    compute_btc_technicals, halving_cycle_info, compute_s2f,
+    _ATH, _HALVING_PRICE, _CYCLE_LOW, _REALIZED_PRICE,
 )
 from calendar_fetcher import get_calendar, flag, importance_dot, beat_miss_label
 
@@ -1208,107 +1209,192 @@ with tab_news:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_crypto:
+    # ── Data fetch ────────────────────────────────────────────────────────────
+    btc_px  = fetch_btc_price()
     cg      = fetch_btc_coingecko()
     cg_glob = fetch_crypto_global()
     fg      = fetch_fear_greed()
     hr      = fetch_btc_hashrate()
+    chain   = fetch_blockchain_info()
     btc_df  = fetch_btc_history(period=yahoo_period)
+    cg_hist = fetch_btc_cg_history(days=365)
     halving = halving_cycle_info()
     tech    = compute_btc_technicals(btc_df) if not btc_df.empty else {}
 
-    btc_price = cg.get("price") or (btc_df["Close"].iloc[-1] if not btc_df.empty else None)
+    btc_price = btc_px.get("price") or cg.get("price") or (
+        float(btc_df["Close"].iloc[-1]) if not btc_df.empty else None)
 
+    # ── 1. Price header + quick links ─────────────────────────────────────────
     if btc_price:
-        chg24 = cg.get("change_24h") or 0
+        chg24 = btc_px.get("change_24h") or cg.get("change_24h") or 0
         c_chg = "#00C896" if chg24 >= 0 else "#FF4757"
         sign  = "+" if chg24 >= 0 else ""
-        mc    = cg.get("market_cap"); dom = cg_glob.get("btc_dominance")
-        vol   = cg.get("volume_24h")
+        mc    = btc_px.get("market_cap") or cg.get("market_cap")
+        dom   = cg_glob.get("btc_dominance")
+        vol   = btc_px.get("volume_24h") or cg.get("volume_24h")
         mc_s  = f"${mc/1e9:.0f}B"  if mc  else "—"
         dom_s = f"{dom:.1f}%"      if dom else "—"
         vol_s = f"${vol/1e9:.1f}B" if vol else "—"
-        st.markdown(f"""
-        <div style="background:#0A1628;border:1px solid #1A2540;border-radius:8px;
-                    padding:16px 24px;margin-bottom:16px;display:flex;
-                    align-items:center;gap:36px;flex-wrap:wrap">
-          <div>
-            <div style="font-size:9px;font-weight:700;letter-spacing:1.2px;color:#2D3E56;text-transform:uppercase">Bitcoin</div>
-            <div style="font-size:34px;font-weight:800;color:#FFFFFF;letter-spacing:-1px">${btc_price:,.0f}</div>
-            <div style="font-size:13px;font-weight:700;color:{c_chg}">{sign}{chg24:.2f}% (24h)</div>
-          </div>
-          <div style="display:flex;gap:28px;flex-wrap:wrap">
-            {"".join(f'<div><div style="font-size:9px;font-weight:700;color:#2D3E56;text-transform:uppercase;letter-spacing:0.8px">{lbl}</div><div style="font-size:17px;font-weight:700;color:#E2E8F0">{val}</div></div>' for lbl,val in [("Market Cap",mc_s),("Dominance",dom_s),("Volume 24h",vol_s),("Cycle",halving["cycle_label"])])}
-          </div>
-        </div>""", unsafe_allow_html=True)
-
-    btc_t1, btc_t2 = st.tabs(["Price & Technicals", "On-Chain & Risk"])
-
-    with btc_t1:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        for col, val, lbl, fmt in [
-            (c1, cg.get("change_24h"),      "24h Change",     "{:+.2f}%"),
-            (c2, cg.get("change_7d"),       "7d Change",      "{:+.2f}%"),
-            (c3, cg.get("change_30d"),      "30d Change",     "{:+.2f}%"),
-            (c4, cg.get("ath_change"),      "From ATH",       "{:.1f}%"),
-            (c5, tech.get("mayer_multiple"),"Mayer Multiple", "{:.3f}"),
-        ]:
-            if val is not None: col.metric(lbl, fmt.format(val))
-
-        c1, c2, c3, _ = st.columns(4)
-        if cg.get("ath"):        c1.metric("All-Time High",    f"${cg['ath']:,.0f}")
-        if cg.get("circulating"): c2.metric("Circulating",     f"{cg['circulating']/1e6:.3f}M BTC")
-        if cg.get("circulating") and cg.get("max_supply"):
-            pct = cg["circulating"] / cg["max_supply"] * 100
-            c3.metric("% of 21M Mined", f"{pct:.2f}%")
-
-        if not btc_df.empty:
-            close   = btc_df["Close"].dropna()
-            fig_btc = _fig(title="Bitcoin Price (USD)", yaxis_title="USD",
-                           height=320, showlegend=True)
-            fig_btc.add_trace(go.Scatter(
-                x=close.index, y=close.values, name="BTC",
-                mode="lines", line=dict(color="#F7931A", width=2),
-                fill="tozeroy", fillcolor="rgba(247,147,26,0.07)"))
-            if tech.get("ma200_series") is not None:
-                m200 = tech["ma200_series"].dropna()
-                fig_btc.add_trace(go.Scatter(x=m200.index, y=m200.values, name="200D MA",
-                                              mode="lines", line=dict(color="#2979FF", width=1.4, dash="dot")))
-            if tech.get("ma50_series") is not None:
-                m50 = tech["ma50_series"].dropna()
-                fig_btc.add_trace(go.Scatter(x=m50.index, y=m50.values, name="50D MA",
-                                              mode="lines", line=dict(color="#A78BFA", width=1.2, dash="dot")))
-            fig_btc.update_xaxes(rangeselector=_RANGE_BUTTONS, rangeslider=dict(visible=False))
-            st.plotly_chart(fig_btc, use_container_width=True)
-
-        st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
-
-        if tech.get("mayer_series") is not None:
-            mm = tech["mayer_series"].dropna()
-            fig_mm = line_chart(mm, "Mayer Multiple (Price / 200D MA)", "ratio",
-                                hlines=[
-                                    {"y": 2.4, "color": "#FF4757", "label": "2.4 — euphoric"},
-                                    {"y": 1.0, "color": "#2D3E56", "label": "1.0 — at 200D MA"},
-                                    {"y": 0.6, "color": "#00C896", "label": "0.6 — oversold"},
-                                ], color="#F7931A", height=220)
-            st.plotly_chart(fig_mm, use_container_width=True)
-            st.caption("Mayer Multiple > 2.4 — historically near cycle tops. < 0.6 — historically deep value.")
-
-        st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+        src   = btc_px.get("source", "CoinGecko")
+        ts_s  = ""
+        if btc_px.get("fetched_at"):
+            _ft = dt.datetime.fromisoformat(btc_px["fetched_at"])
+            ts_s = _ft.strftime("%H:%M:%S UTC")
 
         st.markdown(
-            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
-            'letter-spacing:0.6px;margin-bottom:8px">HALVING CYCLE TRACKER</p>',
-            unsafe_allow_html=True)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Last Halving",  halving["last_halving"])
-        c2.metric("Next Halving",  halving["next_halving"])
-        c3.metric("Days Since",    f"{halving['days_since']:,}")
-        c4.metric("Days to Next",  f"{halving['days_to_next']:,}")
-        st.progress(halving["pct_through"] / 100)
-        st.caption(f"{halving['pct_through']:.1f}% through current 4-year cycle — {halving['cycle_label']}")
+            f'<div style="background:#0A1628;border:1px solid #1A2540;border-radius:8px;'
+            f'padding:16px 24px;margin-bottom:12px;display:flex;'
+            f'align-items:center;gap:36px;flex-wrap:wrap">'
+            f'<div>'
+            f'<div style="font-size:9px;font-weight:700;letter-spacing:1.2px;'
+            f'color:#2D3E56;text-transform:uppercase">Bitcoin · {src}'
+            f'{f" · {ts_s}" if ts_s else ""}</div>'
+            f'<div style="font-size:38px;font-weight:800;color:#FFFFFF;'
+            f'letter-spacing:-1px">${btc_price:,.0f}</div>'
+            f'<div style="font-size:14px;font-weight:700;color:{c_chg}">'
+            f'{sign}{chg24:.2f}% (24h)</div>'
+            f'</div>'
+            f'<div style="display:flex;gap:28px;flex-wrap:wrap">'
+            + "".join(
+                f'<div><div style="font-size:9px;font-weight:700;color:#2D3E56;'
+                f'text-transform:uppercase;letter-spacing:0.8px">{lbl}</div>'
+                f'<div style="font-size:17px;font-weight:700;color:#E2E8F0">{val}</div></div>'
+                for lbl, val in [
+                    ("Market Cap", mc_s), ("BTC Dom.", dom_s),
+                    ("Volume 24h", vol_s), ("Cycle Phase", halving["cycle_label"])
+                ]
+            )
+            + f'</div></div>',
+            unsafe_allow_html=True,
+        )
 
-    with btc_t2:
-        col_gauge, col_mining = st.columns([1, 2])
+    # Quick links
+    st.markdown(
+        '<div style="display:flex;gap:10px;margin-bottom:16px">'
+        '<a href="https://bitbo.io" target="_blank" style="display:inline-block;'
+        'padding:7px 16px;background:rgba(247,147,26,0.12);color:#F7931A;'
+        'border:1px solid rgba(247,147,26,0.35);border-radius:5px;font-size:12px;'
+        'font-weight:700;text-decoration:none">Open Bitbo Dashboard →</a>'
+        '<a href="https://www.tradingview.com/chart/?symbol=BITSTAMP:BTCUSD" '
+        'target="_blank" style="display:inline-block;padding:7px 16px;'
+        'background:rgba(41,121,255,0.10);color:#5B9BFF;'
+        'border:1px solid rgba(41,121,255,0.30);border-radius:5px;font-size:12px;'
+        'font-weight:700;text-decoration:none">Open TradingView →</a>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── 2. 4-Year Cycle section ───────────────────────────────────────────────
+    _PHASE_COLOR = {
+        "Accumulation / Early Bull":  "#00C896",
+        "Bull Market Peak Zone":      "#FFA502",
+        "Distribution / Late Bull":   "#FF6B35",
+        "Bear Market":                "#FF4757",
+        "Accumulation / Pre-Halving": "#5B9BFF",
+    }
+    phase_color = _PHASE_COLOR.get(halving["cycle_label"], "#A0AEC0")
+    pct = halving["pct_through"]
+
+    st.markdown(
+        '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+        'letter-spacing:0.6px;margin-bottom:10px">4-YEAR HALVING CYCLE</p>',
+        unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div style="border:1px solid #1A2540;border-left:4px solid {phase_color};'
+        f'border-radius:6px;padding:14px 18px;margin-bottom:12px">'
+        f'<div style="display:flex;justify-content:space-between;align-items:flex-start;'
+        f'flex-wrap:wrap;gap:12px;margin-bottom:12px">'
+        f'<div>'
+        f'<div style="font-size:9px;color:#4A607A;text-transform:uppercase;'
+        f'letter-spacing:0.9px;margin-bottom:4px">Current Phase</div>'
+        f'<div style="font-size:22px;font-weight:800;color:{phase_color}">'
+        f'{halving["cycle_label"]}</div>'
+        f'<div style="font-size:11px;color:#A0AEC0;margin-top:2px">'
+        f'{pct:.1f}% through cycle · {halving["days_since"]:,} days since halving</div>'
+        f'</div>'
+        f'<div style="display:flex;gap:24px;flex-wrap:wrap">'
+        f'<div><div style="font-size:9px;color:#4A607A;text-transform:uppercase;'
+        f'letter-spacing:0.9px">Last Halving</div>'
+        f'<div style="font-size:14px;font-weight:700;color:#E2E8F0">'
+        f'{halving["last_halving"]}</div>'
+        f'<div style="font-size:10px;color:#4A607A">Block {halving["last_halving_block"]:,}</div>'
+        f'</div>'
+        f'<div><div style="font-size:9px;color:#4A607A;text-transform:uppercase;'
+        f'letter-spacing:0.9px">Next Halving (est.)</div>'
+        f'<div style="font-size:14px;font-weight:700;color:#E2E8F0">'
+        f'{halving["next_halving"]}</div>'
+        f'<div style="font-size:10px;color:#4A607A">'
+        f'{halving["days_to_next"]:,} days remaining</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+        f'<div style="background:#1A2540;border-radius:4px;height:8px;width:100%;'
+        f'margin-bottom:4px">'
+        f'<div style="background:{phase_color};height:8px;border-radius:4px;'
+        f'width:{pct}%"></div>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-between;'
+        f'font-size:9px;color:#2D3E56">'
+        f'<span>Halving Apr 2024</span>'
+        f'<span style="color:#4A607A">12mo · Early Bull</span>'
+        f'<span style="color:#4A607A">18mo · Peak Zone</span>'
+        f'<span style="color:#4A607A">24mo · Distribution</span>'
+        f'<span style="color:#4A607A">36mo · Bear</span>'
+        f'<span>Next Halving ~Apr 2028</span>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Cycle multiples
+    if btc_price:
+        ath_pct     = (btc_price - _ATH)        / _ATH        * 100
+        halving_pct = (btc_price - _HALVING_PRICE) / _HALVING_PRICE * 100
+        low_pct     = (btc_price - _CYCLE_LOW)  / _CYCLE_LOW  * 100
+        realized_pct= (btc_price - _REALIZED_PRICE) / _REALIZED_PRICE * 100
+
+        cm1, cm2, cm3, cm4 = st.columns(4)
+        cm1.metric("vs ATH ($109K)",         f"{ath_pct:+.1f}%")
+        cm2.metric("vs Halving Price ($63K)", f"{halving_pct:+.1f}%")
+        cm3.metric("vs Cycle Low ($15.5K)",   f"{low_pct:+.1f}%")
+        cm4.metric("vs Realized Price ($40K)",f"{realized_pct:+.1f}%")
+
+    # Historical cycle peaks
+    st.markdown(
+        '<p style="font-size:11px;font-weight:700;color:#4A607A;'
+        'letter-spacing:0.6px;margin:10px 0 6px">HISTORICAL CYCLE PEAKS</p>',
+        unsafe_allow_html=True)
+    _peaks = [
+        ("Cycle 1", "Jun 2011",  "$31",     ""),
+        ("Cycle 2", "Nov 2013",  "$1,242",  ""),
+        ("Cycle 3", "Dec 2017",  "$19,891", ""),
+        ("Cycle 4", "Nov 2021",  "$69,044", ""),
+        ("Cycle 5", "Current",   "TBD",     "⟵ we are here"),
+    ]
+    peak_rows = "".join(
+        f'<div style="display:flex;gap:16px;padding:5px 0;'
+        f'border-bottom:1px solid #0E1C30;align-items:center">'
+        f'<span style="font-size:10px;color:#4A607A;width:52px">{cy}</span>'
+        f'<span style="font-size:10px;color:#2D3E56;width:72px">{date}</span>'
+        f'<span style="font-size:13px;font-weight:700;color:#F7931A;width:76px">{price}</span>'
+        f'<span style="font-size:10px;color:#4A607A">{note}</span>'
+        f'</div>'
+        for cy, date, price, note in _peaks
+    )
+    st.markdown(
+        f'<div style="background:#060E1A;border:1px solid #1A2540;'
+        f'border-radius:6px;padding:10px 14px">{peak_rows}</div>',
+        unsafe_allow_html=True)
+
+    st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+    # ── Sub-tabs ──────────────────────────────────────────────────────────────
+    btc_t1, btc_t2, btc_t3 = st.tabs(["On-Chain & Risk", "Mining & Network", "Price & Technicals"])
+
+    # ── 3. On-Chain & Risk ────────────────────────────────────────────────────
+    with btc_t1:
+        col_gauge, col_onchain = st.columns([1, 2])
 
         with col_gauge:
             if fg.get("value") is not None:
@@ -1318,7 +1404,8 @@ with tab_crypto:
                 fig_fg = go.Figure(go.Indicator(
                     mode="gauge+number",
                     value=val,
-                    title={"text": f"<b>Fear & Greed</b><br><span style='font-size:12px;color:#9AA5B4'>{lbl}</span>",
+                    title={"text": f"<b>Fear & Greed</b><br>"
+                                   f"<span style='font-size:12px;color:#9AA5B4'>{lbl}</span>",
                            "font": {"size": 14, "color": "#E2E8F0"}},
                     number={"font": {"size": 42, "color": gc}},
                     gauge={
@@ -1333,49 +1420,250 @@ with tab_crypto:
                             {"range": [55, 75], "color": "rgba(0,200,150,0.08)"},
                             {"range": [75,100], "color": "rgba(0,230,118,0.12)"},
                         ],
-                        "threshold": {"line": {"color": gc, "width": 3}, "thickness": 0.8, "value": val},
+                        "threshold": {"line": {"color": gc, "width": 3},
+                                      "thickness": 0.8, "value": val},
                     }
                 ))
                 fig_fg.update_layout(paper_bgcolor="rgba(0,0,0,0)",
-                                      font=dict(family="Inter, sans-serif"),
-                                      height=220, margin=dict(l=16, r=16, t=50, b=10))
+                                     font=dict(family="Inter, sans-serif"),
+                                     height=220, margin=dict(l=16, r=16, t=50, b=10))
                 st.plotly_chart(fig_fg, use_container_width=True)
-                st.caption("0 = Extreme Fear — historically good entries | "
-                           "100 = Extreme Greed — historically caution territory")
+                st.caption("0 = Extreme Fear · 100 = Extreme Greed")
 
-        with col_mining:
+        with col_onchain:
             st.markdown(
                 '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
-                'letter-spacing:0.6px;margin-bottom:8px">MINING & NETWORK SECURITY</p>',
+                'letter-spacing:0.6px;margin-bottom:8px">MAYER MULTIPLE</p>',
                 unsafe_allow_html=True)
-            if hr:
-                c1, c2 = st.columns(2)
-                if hr.get("hashrate_ehs"):
-                    c1.metric("Hash Rate",      f"{hr['hashrate_ehs']:.1f} EH/s")
-                if hr.get("difficulty"):
-                    c2.metric("Difficulty",     f"{hr['difficulty']/1e12:.2f}T")
-                c1, c2 = st.columns(2)
-                if hr.get("difficulty_change_pct") is not None:
-                    c1.metric("Next Adjustment", f"{hr['difficulty_change_pct']:+.2f}%")
-                if hr.get("remaining_blocks"):
-                    c2.metric("Blocks to Retarget", f"{hr['remaining_blocks']:,}")
+            mm_val = tech.get("mayer_multiple")
+            if mm_val and btc_price:
+                ma200_val = tech.get("ma200")
+                if mm_val < 0.8:   mm_label, mm_color = "Extreme Undervalue — historically strong buy zone", "#00C896"
+                elif mm_val < 1.0: mm_label, mm_color = "Undervalue", "#00C896"
+                elif mm_val < 1.5: mm_label, mm_color = "Fair Value", "#A0AEC0"
+                elif mm_val < 2.4: mm_label, mm_color = "Overvalue — historically sell zone begins", "#FFA502"
+                else:              mm_label, mm_color = "Extreme Overvalue — historically near cycle top", "#FF4757"
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:16px;margin-bottom:6px">'
+                    f'<div style="font-size:32px;font-weight:900;color:{mm_color}">{mm_val:.3f}</div>'
+                    f'<div><div style="font-size:13px;font-weight:600;color:{mm_color}">{mm_label}</div>'
+                    f'<div style="font-size:11px;color:#4A607A">'
+                    f'Price / 200D MA'
+                    f'{f" · 200DMA = ${ma200_val:,.0f}" if ma200_val else ""}'
+                    f'</div></div></div>',
+                    unsafe_allow_html=True)
 
-            if fg.get("history"):
-                hist_df = pd.DataFrame(fg["history"])
-                hist_df["date"] = pd.to_datetime(hist_df["date"], unit="s")
-                hist_df = hist_df.sort_values("date")
-                fig_fgh = _fig(title="Fear & Greed — 30D History", height=175)
-                fig_fgh.add_trace(go.Bar(
-                    x=hist_df["date"], y=hist_df["value"],
-                    marker_color=[
-                        "#FF4757" if v < 25 else "#FF7043" if v < 45 else
-                        "#FFA502" if v < 55 else "#00C896" if v < 75 else "#00E676"
-                        for v in hist_df["value"]
-                    ],
-                    hovertemplate="%{y}<extra></extra>",
-                ))
-                fig_fgh.add_hline(y=50, line_dash="dot", line_color="#2D3E56", line_width=1)
-                st.plotly_chart(fig_fgh, use_container_width=True)
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin:12px 0 8px">STOCK-TO-FLOW</p>',
+                unsafe_allow_html=True)
+            circ = cg.get("circulating") or (chain.get("total_btc") if chain else None)
+            s2f  = compute_s2f(circ) if circ else {}
+            if s2f and btc_price:
+                implied = s2f["implied_price"]
+                premium = (btc_price / implied - 1) * 100 if implied else None
+                s2f_c1, s2f_c2, s2f_c3 = st.columns(3)
+                s2f_c1.metric("S2F Ratio",      f"{s2f['ratio']:.1f}x")
+                s2f_c2.metric("S2F Implied Price", f"${implied:,.0f}")
+                if premium is not None:
+                    s2f_c3.metric("Premium to Model", f"{premium:+.1f}%")
+                st.caption(f"Annual BTC issuance: ~164,250 BTC (3.125/block × 144 blocks × 365 days). "
+                           f"Model: price = exp(3.31 × ln(S2F) − 1.84)")
+
+            if chain:
+                st.markdown(
+                    '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                    'letter-spacing:0.6px;margin:12px 0 8px">ON-CHAIN (blockchain.info)</p>',
+                    unsafe_allow_html=True)
+                oc1, oc2, oc3 = st.columns(3)
+                if chain.get("total_btc"):
+                    oc1.metric("BTC in Circulation", f"{chain['total_btc']/1e6:.4f}M BTC")
+                if chain.get("n_tx_24h"):
+                    oc2.metric("Transactions (24h)", f"{chain['n_tx_24h']:,}")
+                if chain.get("avg_fee_usd") is not None:
+                    oc3.metric("Avg Fee (USD)", f"${chain['avg_fee_usd']:.2f}")
+
+        # F&G history
+        if fg.get("history"):
+            hist_df = pd.DataFrame(fg["history"])
+            hist_df["date"] = pd.to_datetime(hist_df["date"], unit="s")
+            hist_df = hist_df.sort_values("date")
+            fig_fgh = _fig(title="Fear & Greed — 30D History", height=175)
+            fig_fgh.add_trace(go.Bar(
+                x=hist_df["date"], y=hist_df["value"],
+                marker_color=[
+                    "#FF4757" if v < 25 else "#FF7043" if v < 45 else
+                    "#FFA502" if v < 55 else "#00C896" if v < 75 else "#00E676"
+                    for v in hist_df["value"]
+                ],
+                hovertemplate="%{y}<extra></extra>",
+            ))
+            fig_fgh.add_hline(y=50, line_dash="dot", line_color="#2D3E56", line_width=1)
+            st.plotly_chart(fig_fgh, use_container_width=True)
+
+        if tech.get("mayer_series") is not None:
+            mm_ser = tech["mayer_series"].dropna()
+            fig_mm = line_chart(mm_ser, "Mayer Multiple (Price / 200D MA)", "ratio",
+                                hlines=[
+                                    {"y": 2.4, "color": "#FF4757", "label": "2.4 — euphoric"},
+                                    {"y": 1.0, "color": "#2D3E56", "label": "1.0 — at 200D MA"},
+                                    {"y": 0.6, "color": "#00C896", "label": "0.6 — oversold"},
+                                ], color="#F7931A", height=220)
+            st.plotly_chart(fig_mm, use_container_width=True)
+            st.caption("Mayer Multiple > 2.4 — historically near cycle tops. < 0.6 — historically deep value.")
+
+    # ── 4. Mining & Network ───────────────────────────────────────────────────
+    with btc_t2:
+        st.markdown(
+            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+            'letter-spacing:0.6px;margin-bottom:8px">MINING & NETWORK SECURITY</p>',
+            unsafe_allow_html=True)
+        if hr:
+            c1, c2, c3, c4 = st.columns(4)
+            if hr.get("hashrate_ehs"):
+                c1.metric("Hash Rate",         f"{hr['hashrate_ehs']:.1f} EH/s")
+            if hr.get("difficulty"):
+                c2.metric("Difficulty",        f"{hr['difficulty']/1e12:.2f}T")
+            if hr.get("difficulty_change_pct") is not None:
+                c3.metric("Next Adjustment",   f"{hr['difficulty_change_pct']:+.2f}%")
+            if hr.get("remaining_blocks"):
+                c4.metric("Blocks to Retarget",f"{hr['remaining_blocks']:,}")
+        else:
+            st.caption("Mining data temporarily unavailable (mempool.space).")
+
+        if cg.get("circulating") and cg.get("max_supply"):
+            pct_mined = cg["circulating"] / cg["max_supply"] * 100
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+            sup1, sup2, sup3 = st.columns(3)
+            sup1.metric("Circulating Supply", f"{cg['circulating']/1e6:.3f}M BTC")
+            sup2.metric("Max Supply",         "21.000M BTC")
+            sup3.metric("% of 21M Mined",     f"{pct_mined:.2f}%")
+
+        if fg.get("history"):
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+            hist_df2 = pd.DataFrame(fg["history"])
+            hist_df2["date"] = pd.to_datetime(hist_df2["date"], unit="s")
+            hist_df2 = hist_df2.sort_values("date")
+            fig_fgh2 = _fig(title="Fear & Greed — 30D History", height=200)
+            fig_fgh2.add_trace(go.Bar(
+                x=hist_df2["date"], y=hist_df2["value"],
+                marker_color=[
+                    "#FF4757" if v < 25 else "#FF7043" if v < 45 else
+                    "#FFA502" if v < 55 else "#00C896" if v < 75 else "#00E676"
+                    for v in hist_df2["value"]
+                ],
+                hovertemplate="%{y}<extra></extra>",
+            ))
+            fig_fgh2.add_hline(y=50, line_dash="dot", line_color="#2D3E56", line_width=1)
+            st.plotly_chart(fig_fgh2, use_container_width=True)
+
+    # ── 5. Price & Technicals ─────────────────────────────────────────────────
+    with btc_t3:
+        # Performance table
+        st.markdown(
+            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+            'letter-spacing:0.6px;margin-bottom:8px">PERFORMANCE</p>',
+            unsafe_allow_html=True)
+
+        # 90d from CG history
+        chg_90d = None
+        if not cg_hist.empty and btc_price and len(cg_hist) >= 90:
+            p_90d_ago = float(cg_hist.iloc[-91]) if len(cg_hist) > 90 else None
+            if p_90d_ago:
+                chg_90d = (btc_price - p_90d_ago) / p_90d_ago * 100
+
+        pf1, pf2, pf3, pf4, pf5 = st.columns(5)
+        for col, val, lbl in [
+            (pf1, cg.get("change_24h"), "1 Day"),
+            (pf2, cg.get("change_7d"),  "7 Days"),
+            (pf3, cg.get("change_30d"), "30 Days"),
+            (pf4, chg_90d,              "90 Days"),
+            (pf5, cg.get("change_1y"),  "1 Year"),
+        ]:
+            if val is not None:
+                col.metric(lbl, f"{val:+.2f}%")
+
+        st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+        # Key price levels table
+        st.markdown(
+            '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+            'letter-spacing:0.6px;margin-bottom:8px">KEY PRICE LEVELS</p>',
+            unsafe_allow_html=True)
+
+        ma200_v = tech.get("ma200")
+        ma50_v  = tech.get("ma50")
+
+        def _pct_from(level: float | None) -> str:
+            if level is None or not btc_price:
+                return "—"
+            pct = (btc_price - level) / level * 100
+            color = "#00C896" if pct >= 0 else "#FF4757"
+            return f'<span style="color:{color}">{pct:+.1f}%</span>'
+
+        _levels = [
+            ("All-Time High",    _ATH,            "hardcoded $109K"),
+            ("200-Day MA",       ma200_v,          ""),
+            ("50-Day MA",        ma50_v,           ""),
+            ("Realized Price",   _REALIZED_PRICE,  "approx. on-chain cost basis"),
+            ("Halving Day Price",_HALVING_PRICE,   "Apr 19 2024"),
+            ("Cycle Low",        _CYCLE_LOW,       "Nov 21 2022"),
+        ]
+        lv_rows = "".join(
+            f'<tr style="border-bottom:1px solid #0E1C30">'
+            f'<td style="padding:7px 12px;font-size:12px;color:#A0AEC0">{name}</td>'
+            f'<td style="padding:7px 12px;font-size:13px;font-weight:700;color:#E2E8F0">'
+            f'{"$" + f"{price:,.0f}" if price else "—"}</td>'
+            f'<td style="padding:7px 12px;font-size:12px">{_pct_from(price)}</td>'
+            f'<td style="padding:7px 12px;font-size:10px;color:#2D3E56">{note}</td>'
+            f'</tr>'
+            for name, price, note in _levels
+        )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;border:1px solid #1A2540;'
+            f'border-radius:6px">'
+            f'<thead><tr style="border-bottom:2px solid #1A2540">'
+            f'<th style="padding:7px 12px;text-align:left;font-size:9px;font-weight:700;'
+            f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">Level</th>'
+            f'<th style="padding:7px 12px;text-align:left;font-size:9px;font-weight:700;'
+            f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">Price</th>'
+            f'<th style="padding:7px 12px;text-align:left;font-size:9px;font-weight:700;'
+            f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">% from Current</th>'
+            f'<th style="padding:7px 12px;text-align:left;font-size:9px;font-weight:700;'
+            f'letter-spacing:0.9px;color:#4A607A;text-transform:uppercase">Note</th>'
+            f'</tr></thead><tbody>{lv_rows}</tbody></table>',
+            unsafe_allow_html=True)
+
+        st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+        # Price chart
+        if not btc_df.empty:
+            close   = btc_df["Close"].dropna()
+            fig_btc = _fig(title="Bitcoin Price (USD)", yaxis_title="USD",
+                           height=340, showlegend=True)
+            fig_btc.add_trace(go.Scatter(
+                x=close.index, y=close.values, name="BTC",
+                mode="lines", line=dict(color="#F7931A", width=2),
+                fill="tozeroy", fillcolor="rgba(247,147,26,0.07)"))
+            if tech.get("ma200_series") is not None:
+                m200 = tech["ma200_series"].dropna()
+                fig_btc.add_trace(go.Scatter(
+                    x=m200.index, y=m200.values, name="200D MA",
+                    mode="lines", line=dict(color="#2979FF", width=1.4, dash="dot")))
+            if tech.get("ma50_series") is not None:
+                m50 = tech["ma50_series"].dropna()
+                fig_btc.add_trace(go.Scatter(
+                    x=m50.index, y=m50.values, name="50D MA",
+                    mode="lines", line=dict(color="#A78BFA", width=1.2, dash="dot")))
+            # Hardcoded reference lines
+            fig_btc.add_hline(y=_ATH,          line_dash="dot", line_color="#FF4757",
+                               line_width=1, annotation_text="ATH $109K", annotation_font_color="#FF4757")
+            fig_btc.add_hline(y=_HALVING_PRICE, line_dash="dot", line_color="#F7931A",
+                               line_width=1, annotation_text="Halving $63K", annotation_font_color="#F7931A")
+            fig_btc.add_hline(y=_CYCLE_LOW,     line_dash="dot", line_color="#00C896",
+                               line_width=1, annotation_text="Cycle Low $15.5K", annotation_font_color="#00C896")
+            fig_btc.update_xaxes(rangeselector=_RANGE_BUTTONS, rangeslider=dict(visible=False))
+            st.plotly_chart(fig_btc, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
