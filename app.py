@@ -57,14 +57,19 @@ def fmt(value, decimals: int = 2, suffix: str = "", prefix: str = "") -> str:
 
 
 def to_float(x):
-    """Extract a plain Python float from any scalar, numpy type, or pandas Series."""
+    """Extract a plain Python float from any scalar, numpy type, pandas Series, or array."""
     try:
         if x is None:
             return None
         if hasattr(x, 'iloc'):
+            x = x.dropna()
+            if len(x) == 0:
+                return None
             x = x.iloc[-1]
+        if hasattr(x, 'ndim') and x.ndim > 0:
+            x = x.flat[0]
         if hasattr(x, 'item'):
-            return x.item()
+            x = x.item()
         v = float(x)
         return None if (math.isnan(v) or math.isinf(v)) else v
     except Exception:

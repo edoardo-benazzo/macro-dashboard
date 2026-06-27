@@ -82,13 +82,18 @@ def latest_snapshot(df: pd.DataFrame):
         return None
 
 
-def compute_beta(stock_returns: pd.Series, benchmark_returns: pd.Series) -> float:
-    aligned = pd.concat([stock_returns, benchmark_returns], axis=1).dropna()
-    if len(aligned) < 20:
-        return float("nan")
-    cov = aligned.cov().iloc[0, 1]
-    var = aligned.iloc[:, 1].var()
-    return cov / var if var else float("nan")
+def compute_beta(stock_returns, benchmark_returns):
+    try:
+        aligned = pd.concat([stock_returns, benchmark_returns], axis=1).dropna()
+        if len(aligned) < 20:
+            return None
+        cov = aligned.cov().iloc[0, 1]
+        var = aligned.iloc[:, 1].var()
+        if not var or var == 0:
+            return None
+        return float(cov / var)
+    except Exception:
+        return None
 
 
 # ── Core macro signal calculations ────────────────────────────────────────────
