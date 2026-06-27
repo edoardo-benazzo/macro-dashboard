@@ -2122,25 +2122,41 @@ with tab_markets:
     except Exception:
         eu_bench_ret = None
 
+    def get_price(ticker):
+        try:
+            t = yf.Ticker(ticker)
+            try:
+                p = t.fast_info['last_price']
+                if p and float(p) > 0:
+                    return float(p), None
+            except Exception:
+                pass
+            h = t.history(period='5d')
+            if h.empty:
+                return None, None
+            if isinstance(h.columns, pd.MultiIndex):
+                h.columns = h.columns.get_level_values(0)
+            closes = h['Close'].dropna()
+            if len(closes) < 2:
+                return None, None
+            last = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2])
+            chg = ((last - prev) / prev) * 100
+            return last, chg
+        except Exception:
+            return None, None
+
     def snap_grid(tickers):
         cols = st.columns(len(tickers))
         for i, ticker in enumerate(tickers):
+            label = (market_data.get(ticker) or {}).get("label", ticker)
             with cols[i]:
-                try:
-                    df = yf.Ticker(ticker).history(period='5d')
-                    if df.empty:
-                        st.metric(ticker, "—")
-                        continue
-                    closes = df['Close'].squeeze().dropna()
-                    if len(closes) < 2:
-                        st.metric(ticker, "—")
-                        continue
-                    last = float(closes.values[-1])
-                    prev = float(closes.values[-2])
-                    chg = ((last - prev) / prev) * 100
-                    st.metric(ticker, fmt(to_float(last), 2), f"{chg:+.2f}%")
-                except Exception:
-                    st.metric(ticker, "—")
+                last, chg = get_price(ticker)
+                if last is not None:
+                    chg_s = f"{chg:+.2f}%" if chg is not None else None
+                    st.metric(label, fmt(last, 2), chg_s)
+                else:
+                    st.metric(label, "—")
 
     def chart_grid(tickers, ncols=2, color="#2979FF"):
         cols = st.columns(ncols); i = 0
