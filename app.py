@@ -2112,9 +2112,15 @@ with tab_macro:
 
 with tab_markets:
     bench_df     = market_data.get("^GSPC", {}).get("df")
-    bench_ret    = bench_df["Close"].pct_change() if bench_df is not None else None
+    try:
+        bench_ret = bench_df["Close"].squeeze().dropna().pct_change().dropna() if bench_df is not None else None
+    except Exception:
+        bench_ret = None
     eu_bench_df  = market_data.get("^STOXX50E", {}).get("df")
-    eu_bench_ret = eu_bench_df["Close"].pct_change() if eu_bench_df is not None else None
+    try:
+        eu_bench_ret = eu_bench_df["Close"].squeeze().dropna().pct_change().dropna() if eu_bench_df is not None else None
+    except Exception:
+        eu_bench_ret = None
 
     def snap_grid(tickers):
         cols = st.columns(len(tickers))
@@ -2125,12 +2131,12 @@ with tab_markets:
                     if df.empty:
                         st.metric(ticker, "—")
                         continue
-                    closes = df['Close'].dropna()
+                    closes = df['Close'].squeeze().dropna()
                     if len(closes) < 2:
                         st.metric(ticker, "—")
                         continue
-                    last = float(closes.iloc[-1])
-                    prev = float(closes.iloc[-2])
+                    last = float(closes.values[-1])
+                    prev = float(closes.values[-2])
                     chg = ((last - prev) / prev) * 100
                     st.metric(ticker, fmt(to_float(last), 2), f"{chg:+.2f}%")
                 except Exception:
@@ -2141,7 +2147,7 @@ with tab_markets:
         for t in tickers:
             meta = market_data.get(t)
             if not meta or meta["df"] is None or meta["df"].empty: continue
-            close = meta["df"]["Close"].dropna()
+            close = meta["df"]["Close"].squeeze().dropna()
             if close.empty or len(close) < 2: continue
             chart_col(cols[i % ncols], close,
                       f"{meta['label']} ({t})", "", t, color=color)
@@ -2156,12 +2162,12 @@ with tab_markets:
                     if df is None or df.empty:
                         st.metric(ticker, "—")
                         continue
-                    close = df['Close'].dropna()
+                    close = df['Close'].squeeze().dropna()
                     if len(close) < 20:
                         st.metric(ticker, "—")
                         continue
                     ret = close.pct_change().dropna()
-                    if bench_ret is None or len(bench_ret) < 20:
+                    if bench_ret is None or not hasattr(bench_ret, '__len__') or len(bench_ret) < 20:
                         st.metric(ticker, "—")
                         continue
                     combined = pd.DataFrame({

@@ -67,7 +67,7 @@ def latest_snapshot(df: pd.DataFrame):
     if df is None or df.empty or len(df) < 2:
         return None
     try:
-        _close = df["Close"].dropna()
+        _close = df["Close"].squeeze().dropna()
         last = float(_close.values[-1])
         prev = float(_close.values[-2]) if len(_close) >= 2 else None
         if prev is None or not math.isfinite(last) or not math.isfinite(prev):
