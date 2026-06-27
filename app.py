@@ -1964,7 +1964,7 @@ with tab_macro:
 
             sect("Leading Indicators")
             c1, c2, c3, c4 = st.columns(4)
-            for col, key, lbl, fmt in [
+            for col, key, lbl, _fstr in [
                 (c1, "retail_sales_yoy",   "Retail Sales YoY",  "{:.2f}%"),
                 (c2, "housing_starts",     "Housing Starts (k)", "{:,.0f}"),
                 (c3, "consumer_sentiment", "UMich Sentiment",   "{:.1f}"),
@@ -1973,7 +1973,7 @@ with tab_macro:
                 v = _latest(key)
                 if v is not None:
                     tr = series_trend(_s(key), 3)
-                    col.metric(lbl, fmt.format(v), f"{tr:+.2f} vs 3m" if tr else None)
+                    col.metric(lbl, _fstr.format(v), f"{tr:+.2f} vs 3m" if tr else None)
             col_a, col_b = st.columns(2)
             rs = _s("retail_sales_yoy"); hs = _s("housing_starts")
             if rs is not None: chart_col(col_a, rs.dropna(), "Retail Sales YoY", "%",
