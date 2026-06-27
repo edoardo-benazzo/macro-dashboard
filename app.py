@@ -2147,17 +2147,42 @@ with tab_markets:
                       f"{meta['label']} ({t})", "", t, color=color)
             i += 1
 
-    def beta_grid(tickers, br, ncols=3):
-        if br is None:
-            _alert("Benchmark data unavailable.", "warning"); return
-        cols = st.columns(ncols); i = 0
-        for t in tickers:
-            meta = market_data.get(t)
-            if not meta or meta["df"] is None or meta["df"].empty: continue
-            beta = compute_beta(meta["df"]["Close"].pct_change(), br)
-            beta_s = fmt(to_float(beta), 2)
-            cols[i % ncols].metric(meta["label"], beta_s)
-            i += 1
+    def beta_grid(tickers, bench_ret):
+        cols = st.columns(len(tickers))
+        for i, ticker in enumerate(tickers):
+            with cols[i]:
+                try:
+                    df = yf.Ticker(ticker).history(period='1y')
+                    if df is None or df.empty:
+                        st.metric(ticker, "—")
+                        continue
+                    close = df['Close'].dropna()
+                    if len(close) < 20:
+                        st.metric(ticker, "—")
+                        continue
+                    ret = close.pct_change().dropna()
+                    if bench_ret is None or len(bench_ret) < 20:
+                        st.metric(ticker, "—")
+                        continue
+                    combined = pd.DataFrame({
+                        'stock': ret,
+                        'bench': bench_ret
+                    }).dropna()
+                    if len(combined) < 20:
+                        st.metric(ticker, "—")
+                        continue
+                    cov = float(combined['stock'].cov(combined['bench']))
+                    var = float(combined['bench'].var())
+                    if var == 0:
+                        st.metric(ticker, "—")
+                        continue
+                    beta = cov / var
+                    if math.isnan(beta) or math.isinf(beta):
+                        st.metric(ticker, "—")
+                        continue
+                    st.metric(ticker, f"{beta:.2f}")
+                except Exception:
+                    st.metric(ticker, "—")
 
     mkt_us, mkt_fi, mkt_comm, mkt_eu, mkt_sect = st.tabs(
         ["US Equity", "Fixed Income", "Commodities & FX", "EU Markets", "Sectors"])
