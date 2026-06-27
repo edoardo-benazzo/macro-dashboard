@@ -600,7 +600,11 @@ def _s(key: str) -> pd.Series | None:
 
 def _latest(key: str) -> float | None:
     s = _s(key)
-    return s.dropna().iloc[-1] if s is not None else None
+    if s is None: return None
+    try:
+        return float(s.dropna().values[-1])
+    except Exception:
+        return None
 
 
 # ── Page header & today's event banner ────────────────────────────────────────
@@ -1265,8 +1269,11 @@ with tab_crypto:
     halving = halving_cycle_info()
     tech    = compute_btc_technicals(btc_df) if not btc_df.empty else {}
 
-    btc_price = btc_px.get("price") or cg.get("price") or (
-        float(btc_df["Close"].iloc[-1]) if not btc_df.empty else None)
+    try:
+        _btc_fallback = float(btc_df["Close"].dropna().values[-1]) if not btc_df.empty else None
+    except Exception:
+        _btc_fallback = None
+    btc_price = btc_px.get("price") or cg.get("price") or _btc_fallback
 
     # ── helper: % from current price ─────────────────────────────────────────
     def _pct_from(level: float | None) -> str:
@@ -1823,8 +1830,12 @@ with tab_macro:
             c1, c2, c3 = st.columns(3)
             if ffr_l2:        c1.metric("Fed Funds Rate",      f"{ffr_l2:.2f}%")
             if not real_ffr.empty:
-                c2.metric("Real Fed Funds Rate",  f"{real_ffr.dropna().iloc[-1]:.2f}%",
-                          help="FFR minus Core PCE — true tightness gauge")
+                try:
+                    _rffr = float(real_ffr.dropna().values[-1])
+                    c2.metric("Real Fed Funds Rate", f"{_rffr:.2f}%",
+                              help="FFR minus Core PCE — true tightness gauge")
+                except Exception:
+                    pass
             if core_pce_l2:  c3.metric("Core PCE (Fed target)", f"{core_pce_l2:.2f}%")
             col_a, col_b = st.columns(2)
             if ffr is not None:      chart_col(col_a, ffr.dropna(), "Fed Funds Rate", "%")
@@ -1905,9 +1916,14 @@ with tab_macro:
                 c1.metric("Unemployment", f"{_latest('unemployment'):.2f}%",
                           f"{tr:+.2f}pp vs 3m" if tr else None)
             if nfp is not None and not nfp.dropna().empty:
-                mom = nfp.dropna().diff().iloc[-1]
-                c2.metric("NFP (k)", f"{nfp.dropna().iloc[-1]:,.0f}",
-                          f"{mom:+,.0f} MoM" if pd.notna(mom) else None)
+                try:
+                    _nfp_s = nfp.dropna()
+                    _nfp_last = float(_nfp_s.values[-1])
+                    _nfp_mom = float(_nfp_s.diff().values[-1])
+                    c2.metric("NFP (k)", f"{_nfp_last:,.0f}",
+                              f"{_nfp_mom:+,.0f} MoM" if math.isfinite(_nfp_mom) else None)
+                except Exception:
+                    pass
             if _latest("initial_claims"):
                 tr2 = series_trend(claims, 4)
                 c3.metric("Init. Claims", f"{_latest('initial_claims'):,.0f}",
@@ -1993,13 +2009,18 @@ with tab_macro:
                 if val: col.metric(f"{lbl} 10Y", f"{val:.2f}%")
             btp = compute_btp_bund_spread(it, de)
             if not btp.empty:
-                btp_l2 = btp.dropna().iloc[-1]; btp_st2 = btp_bund_status(btp_l2)
-                tr_b = series_trend(btp, 3)
-                c1, c2 = st.columns(2)
-                c1.metric("BTP-Bund Spread", f"{btp_l2:.0f} bps", btp_st2["label"])
-                if tr_b: c2.metric("vs 3m ago", f"{tr_b:+.0f}bps")
-                if btp_st2["status"] in ("elevated", "stress"):
-                    _alert(f"BTP-Bund {btp_st2['label']} — {btp_l2:.0f}bps. ECB steps in above ~200-250bps.", "warning")
+                try:
+                    btp_l2 = float(btp.dropna().values[-1])
+                except Exception:
+                    btp_l2 = None
+                if btp_l2 is not None:
+                    btp_st2 = btp_bund_status(btp_l2)
+                    tr_b = series_trend(btp, 3)
+                    c1, c2 = st.columns(2)
+                    c1.metric("BTP-Bund Spread", f"{btp_l2:.0f} bps", btp_st2["label"])
+                    if tr_b: c2.metric("vs 3m ago", f"{tr_b:+.0f}bps")
+                    if btp_st2["status"] in ("elevated", "stress"):
+                        _alert(f"BTP-Bund {btp_st2['label']} — {btp_l2:.0f}bps. ECB steps in above ~200-250bps.", "warning")
                 col_a, col_b = st.columns(2)
                 chart_col(col_a, btp.dropna(), "BTP-Bund Spread", "bps",
                           hlines=[{"y": 150, "color": "#FFA502", "label": "Elevated (150bps)"},

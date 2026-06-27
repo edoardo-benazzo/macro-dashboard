@@ -67,10 +67,10 @@ def latest_snapshot(df: pd.DataFrame):
     if df is None or df.empty or len(df) < 2:
         return None
     try:
-        last = float(df["Close"].dropna().iloc[-1])
-        prev_series = df["Close"].dropna()
-        prev = float(prev_series.iloc[-2]) if len(prev_series) >= 2 else None
-        if prev is None or math.isnan(last) or math.isnan(prev):
+        _close = df["Close"].dropna()
+        last = float(_close.values[-1])
+        prev = float(_close.values[-2]) if len(_close) >= 2 else None
+        if prev is None or not math.isfinite(last) or not math.isfinite(prev):
             return None
         change_abs = last - prev
         change_pct = (change_abs / prev) * 100 if prev else None
