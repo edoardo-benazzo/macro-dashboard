@@ -2096,20 +2096,25 @@ with tab_markets:
     eu_bench_df  = market_data.get("^STOXX50E", {}).get("df")
     eu_bench_ret = eu_bench_df["Close"].pct_change() if eu_bench_df is not None else None
 
-    def snap_grid(tickers, ncols=3):
-        cols = st.columns(ncols)
-        for i, t in enumerate(tickers):
-            meta = market_data.get(t)
-            if not meta: continue
-            snap = latest_snapshot(meta["df"])
-            if snap:
-                last, _, pct, _ = snap
-                last_s = fmt(last, 2)
-                pct_s  = fmt(pct, 2, "%", "+") if pct is not None and not (isinstance(pct, float) and (math.isnan(pct) or math.isinf(pct))) else None
-                if last_s != "—":
-                    cols[i % ncols].metric(meta["label"], f"{last_s}", pct_s, help=t)
-                # skip the card entirely if data is bad (avoids blank/NaN cards)
-            # if no snap, show nothing — avoids "N/A" grid cards
+    def snap_grid(tickers):
+        cols = st.columns(len(tickers))
+        for i, ticker in enumerate(tickers):
+            with cols[i]:
+                try:
+                    df = yf.Ticker(ticker).history(period='5d')
+                    if df.empty:
+                        st.metric(ticker, "—")
+                        continue
+                    closes = df['Close'].dropna()
+                    if len(closes) < 2:
+                        st.metric(ticker, "—")
+                        continue
+                    last = float(closes.iloc[-1])
+                    prev = float(closes.iloc[-2])
+                    chg = ((last - prev) / prev) * 100
+                    st.metric(ticker, fmt(last, 2), f"{chg:+.2f}%")
+                except Exception:
+                    st.metric(ticker, "—")
 
     def chart_grid(tickers, ncols=2, color="#2979FF"):
         cols = st.columns(ncols); i = 0
