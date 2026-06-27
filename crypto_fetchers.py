@@ -215,8 +215,11 @@ def fetch_btc_hashrate() -> dict:
         )
         r.raise_for_status()
         data = r.json()
-        result["hashrate_ehs"] = data.get("currentHashrate", 0) / 1e18
-        result["difficulty"]   = data.get("currentDifficulty")
+        raw_hr = data.get("currentHashrate", 0) or 0
+        hr_ehs = raw_hr / 1e18
+        result["hashrate_ehs"] = hr_ehs if not math.isnan(hr_ehs) else None
+        diff = data.get("currentDifficulty")
+        result["difficulty"] = diff if diff is not None else None
     except Exception:
         pass
     try:
@@ -226,8 +229,10 @@ def fetch_btc_hashrate() -> dict:
         )
         r2.raise_for_status()
         adj = r2.json()
-        result["difficulty_change_pct"] = adj.get("difficultyChange")
-        result["remaining_blocks"]      = adj.get("remainingBlocks")
+        dc = adj.get("difficultyChange")
+        rb = adj.get("remainingBlocks")
+        result["difficulty_change_pct"] = dc if (dc is not None and not (isinstance(dc, float) and math.isnan(dc))) else None
+        result["remaining_blocks"] = rb
     except Exception:
         pass
     return result

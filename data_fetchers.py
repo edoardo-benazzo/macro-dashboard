@@ -4,6 +4,7 @@ All data-fetching logic lives here, isolated from the UI code in app.py.
 
 import concurrent.futures
 import datetime as dt
+import math
 
 import pandas as pd
 import requests
@@ -65,12 +66,20 @@ def load_all_markets(tickers: dict, period: str = "5y") -> dict:
 def latest_snapshot(df: pd.DataFrame):
     if df is None or df.empty or len(df) < 2:
         return None
-    last = df["Close"].iloc[-1]
-    prev = df["Close"].iloc[-2]
-    change_abs = last - prev
-    change_pct = (change_abs / prev) * 100 if prev else float("nan")
-    last_date = df.index[-1].date()
-    return last, change_abs, change_pct, last_date
+    try:
+        last = float(df["Close"].dropna().iloc[-1])
+        prev_series = df["Close"].dropna()
+        prev = float(prev_series.iloc[-2]) if len(prev_series) >= 2 else None
+        if prev is None or math.isnan(last) or math.isnan(prev):
+            return None
+        change_abs = last - prev
+        change_pct = (change_abs / prev) * 100 if prev else None
+        if change_pct is not None and (math.isnan(change_pct) or math.isinf(change_pct)):
+            change_pct = None
+        last_date = df.index[-1].date()
+        return last, change_abs, change_pct, last_date
+    except Exception:
+        return None
 
 
 def compute_beta(stock_returns: pd.Series, benchmark_returns: pd.Series) -> float:

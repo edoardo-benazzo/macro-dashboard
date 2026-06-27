@@ -6,6 +6,7 @@ Data: FRED · Yahoo Finance · CoinGecko · mempool.space · Alternative.me
 
 import datetime as dt
 import hashlib
+import math
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -39,6 +40,34 @@ from crypto_fetchers import (
     _HALVING_PRICE, _CYCLE_LOW, _REALIZED_PRICE, _MVRV_REALIZED,
 )
 from calendar_fetcher import get_calendar, flag, importance_dot, beat_miss_label
+
+# ── Global safe formatters ─────────────────────────────────────────────────────
+
+def fmt(value, decimals: int = 2, suffix: str = "", prefix: str = "") -> str:
+    """Safe number formatter — never returns nan/None/inf to the UI."""
+    try:
+        if value is None:
+            return "—"
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return "—"
+        return f"{prefix}{f:,.{decimals}f}{suffix}"
+    except Exception:
+        return "—"
+
+
+def _safe_delta(value) -> str | None:
+    """Return None instead of a NaN/None delta (for st.metric delta parameter)."""
+    try:
+        if value is None:
+            return None
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return value  # return as-is (already formatted string or number)
+    except Exception:
+        return None
+
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Macro Dashboard", layout="wide",
@@ -299,10 +328,13 @@ def tv_link(symbol_key: str):
 def chart_col(col, series: pd.Series, title: str, units: str,
               tv_key: str = None, hlines: list = None, color: str = "#2979FF"):
     with col:
-        st.plotly_chart(line_chart(series, title, units, hlines, color),
-                        use_container_width=True)
-        if tv_key:
-            tv_link(tv_key)
+        if series is not None and not series.dropna().empty and len(series.dropna()) > 1:
+            st.plotly_chart(line_chart(series, title, units, hlines, color),
+                            use_container_width=True)
+            if tv_key:
+                tv_link(tv_key)
+        else:
+            st.caption(f"{title}: chart data unavailable.")
 
 
 def sect(title: str, caption: str = ""):
@@ -609,9 +641,16 @@ with tab_score:
         eu_unemp_l   = _latest("eu_unemployment")
         de_10y_l     = _latest("de_10y_yield");   it_10y_l    = _latest("it_10y_yield")
 
-        sp2s10s    = (y10_l - y2_l)  if (y10_l and y2_l)  else None
-        sp3m10s    = (y10_l - y3m_l) if (y10_l and y3m_l) else None
-        real_ffr_l = round(ffr_l - cpi_l, 2) if (ffr_l and cpi_l) else None
+        def _safe_sub(a, b):
+            if a is None or b is None: return None
+            try:
+                v = float(a) - float(b)
+                return None if (math.isnan(v) or math.isinf(v)) else v
+            except Exception: return None
+
+        sp2s10s    = _safe_sub(y10_l, y2_l)
+        sp3m10s    = _safe_sub(y10_l, y3m_l)
+        real_ffr_l = round(_safe_sub(ffr_l, cpi_l), 2) if _safe_sub(ffr_l, cpi_l) is not None else None
         hy_ig_ratio = round(hy_oas_l / ig_oas_l, 2) if (hy_oas_l and ig_oas_l and ig_oas_l > 0) else None
 
         _vix_df  = (market_data.get("^VIX") or {}).get("df")
@@ -1233,27 +1272,54 @@ with tab_crypto:
     def _pct_from(level: float | None) -> str:
         if level is None or not btc_price:
             return "—"
-        p = (btc_price - level) / level * 100
-        color = "#00C896" if p >= 0 else "#FF4757"
-        return f'<span style="color:{color}">{p:+.1f}%</span>'
+        try:
+            p = (btc_price - level) / level * 100
+            if math.isnan(p) or math.isinf(p):
+                return "—"
+            color = "#00C896" if p >= 0 else "#FF4757"
+            return f'<span style="color:{color}">{p:+.1f}%</span>'
+        except Exception:
+            return "—"
 
     # ── compute performance changes from CG history ───────────────────────────
     chg_90d = chg_1y = None
     if not cg_hist.empty and btc_price:
-        if len(cg_hist) > 90:
-            chg_90d = (btc_price / float(cg_hist.iloc[-91]) - 1) * 100
-        if len(cg_hist) > 365:
-            chg_1y  = (btc_price / float(cg_hist.iloc[-366]) - 1) * 100
-    chg_24h = btc_px.get("change_24h") or cg.get("change_24h")
-    chg_7d  = cg.get("change_7d")
-    chg_30d = cg.get("change_30d")
-    ath_chg = (btc_price / _ATH - 1) * 100      if btc_price else None
-    low_chg = (btc_price / _CYCLE_LOW - 1) * 100 if btc_price else None
+        try:
+            if len(cg_hist) > 90:
+                base90 = float(cg_hist.iloc[-91])
+                if base90 and not math.isnan(base90):
+                    v = (btc_price / base90 - 1) * 100
+                    chg_90d = v if not math.isnan(v) else None
+        except Exception:
+            chg_90d = None
+        try:
+            if len(cg_hist) > 365:
+                base1y = float(cg_hist.iloc[-366])
+                if base1y and not math.isnan(base1y):
+                    v = (btc_price / base1y - 1) * 100
+                    chg_1y = v if not math.isnan(v) else None
+        except Exception:
+            chg_1y = None
+
+    def _safe_chg(v):
+        if v is None: return None
+        try:
+            f = float(v)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except Exception:
+            return None
+
+    chg_24h = _safe_chg(btc_px.get("change_24h") or cg.get("change_24h"))
+    chg_7d  = _safe_chg(cg.get("change_7d"))
+    chg_30d = _safe_chg(cg.get("change_30d"))
+    ath_chg = _safe_chg((btc_price / _ATH - 1) * 100)      if btc_price else None
+    low_chg = _safe_chg((btc_price / _CYCLE_LOW - 1) * 100) if btc_price else None
 
     # ── 1. Price header ───────────────────────────────────────────────────────
     if btc_price:
-        c_chg = "#00C896" if (chg_24h or 0) >= 0 else "#FF4757"
-        sign  = "+" if (chg_24h or 0) >= 0 else ""
+        _chg24_safe = chg_24h if (chg_24h is not None and not (isinstance(chg_24h, float) and (math.isnan(chg_24h) or math.isinf(chg_24h)))) else None
+        c_chg = "#00C896" if (_chg24_safe or 0) >= 0 else "#FF4757"
+        sign  = "+" if (_chg24_safe or 0) >= 0 else ""
         mc    = cg.get("market_cap")
         dom   = cg_glob.get("btc_dominance")
         vol   = btc_px.get("volume_24h") or cg.get("volume_24h")
@@ -1265,12 +1331,19 @@ with tab_crypto:
             ts_s = dt.datetime.fromisoformat(btc_px["fetched_at"]).strftime("%H:%M:%S UTC")
 
         extras = []
-        if mc:   extras.append(("Market Cap",   f"${mc/1e9:.0f}B"))
-        if dom:  extras.append(("BTC Dom.",      f"{dom:.1f}%"))
-        if vol:  extras.append(("24h Vol",       f"${vol/1e9:.1f}B"))
-        if hi24: extras.append(("24h High",      f"${hi24:,.0f}"))
-        if lo24: extras.append(("24h Low",       f"${lo24:,.0f}"))
+        if mc and not (isinstance(mc, float) and math.isnan(mc)):
+            extras.append(("Market Cap", f"${mc/1e9:.0f}B"))
+        if dom and not (isinstance(dom, float) and math.isnan(dom)):
+            extras.append(("BTC Dom.", f"{dom:.1f}%"))
+        if vol and not (isinstance(vol, float) and math.isnan(vol)):
+            extras.append(("24h Vol", f"${vol/1e9:.1f}B"))
+        if hi24 and not (isinstance(hi24, float) and math.isnan(hi24)):
+            extras.append(("24h High", f"${hi24:,.0f}"))
+        if lo24 and not (isinstance(lo24, float) and math.isnan(lo24)):
+            extras.append(("24h Low", f"${lo24:,.0f}"))
         extras.append(("Cycle Phase", halving["cycle_label"]))
+
+        chg24_display = f"{sign}{_chg24_safe:.2f}% (24h)" if _chg24_safe is not None else "— (24h)"
 
         st.markdown(
             f'<div style="background:#0A1628;border:1px solid #1A2540;border-radius:8px;'
@@ -1283,7 +1356,7 @@ with tab_crypto:
             f'<div style="font-size:38px;font-weight:800;color:#FFFFFF;'
             f'letter-spacing:-1px">${btc_price:,.0f}</div>'
             f'<div style="font-size:14px;font-weight:700;color:{c_chg}">'
-            f'{sign}{(chg_24h or 0):.2f}% (24h)</div>'
+            f'{chg24_display}</div>'
             f'</div>'
             f'<div style="display:flex;gap:24px;flex-wrap:wrap">'
             + "".join(
@@ -1329,7 +1402,7 @@ with tab_crypto:
     ]
     perf_cols = st.columns(len(_perf_rows))
     for col, (lbl, val) in zip(perf_cols, _perf_rows):
-        if val is not None:
+        if val is not None and not (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
             c = "#00C896" if val >= 0 else "#FF4757"
             col.markdown(
                 f'<div style="text-align:center">'
@@ -1518,20 +1591,26 @@ with tab_crypto:
             '<p style="font-size:11px;font-weight:700;color:#4A607A;'
             'letter-spacing:0.6px;margin-bottom:6px">MVRV RATIO</p>',
             unsafe_allow_html=True)
-        if btc_price:
-            mvrv = btc_price / _MVRV_REALIZED
-            if mvrv < 1.0:   mv_lbl, mv_c = "Below cost basis — historically strong buy", "#00C896"
-            elif mvrv < 2.0: mv_lbl, mv_c = "Fair value / accumulation", "#A0AEC0"
-            elif mvrv < 3.5: mv_lbl, mv_c = "Overvalued — distribution zone", "#FFA502"
-            else:             mv_lbl, mv_c = "Extreme — historical cycle top territory", "#FF4757"
-            st.markdown(
-                f'<div style="display:flex;align-items:center;gap:14px;margin-bottom:4px">'
-                f'<div style="font-size:30px;font-weight:900;color:{mv_c}">{mvrv:.2f}</div>'
-                f'<div style="font-size:12px;color:{mv_c}">{mv_lbl}</div>'
-                f'</div>'
-                f'<div style="font-size:10px;color:#4A607A">'
-                f'Price / Realized Price · realized ≈ ${_MVRV_REALIZED:,}</div>',
-                unsafe_allow_html=True)
+        if btc_price and _MVRV_REALIZED:
+            try:
+                mvrv = btc_price / _MVRV_REALIZED
+                if math.isnan(mvrv) or math.isinf(mvrv):
+                    st.caption("MVRV data unavailable.")
+                else:
+                    if mvrv < 1.0:   mv_lbl, mv_c = "Below cost basis — historically strong buy", "#00C896"
+                    elif mvrv < 2.0: mv_lbl, mv_c = "Fair value / accumulation", "#A0AEC0"
+                    elif mvrv < 3.5: mv_lbl, mv_c = "Overvalued — distribution zone", "#FFA502"
+                    else:             mv_lbl, mv_c = "Extreme — historical cycle top territory", "#FF4757"
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:14px;margin-bottom:4px">'
+                        f'<div style="font-size:30px;font-weight:900;color:{mv_c}">{mvrv:.2f}</div>'
+                        f'<div style="font-size:12px;color:{mv_c}">{mv_lbl}</div>'
+                        f'</div>'
+                        f'<div style="font-size:10px;color:#4A607A">'
+                        f'Price / Realized Price · realized ≈ ${_MVRV_REALIZED:,}</div>',
+                        unsafe_allow_html=True)
+            except Exception:
+                st.caption("MVRV data unavailable.")
 
         st.markdown('<div style="margin-top:14px"></div>', unsafe_allow_html=True)
 
@@ -1542,20 +1621,28 @@ with tab_crypto:
             unsafe_allow_html=True)
         mm_val = tech.get("mayer_multiple")
         if mm_val and btc_price:
-            ma200_val = tech.get("ma200")
-            if mm_val < 0.8:   mm_lbl, mm_c = "Extreme Undervalue — strong buy zone", "#00C896"
-            elif mm_val < 1.0: mm_lbl, mm_c = "Undervalue",                           "#00C896"
-            elif mm_val < 1.5: mm_lbl, mm_c = "Fair Value",                           "#A0AEC0"
-            elif mm_val < 2.4: mm_lbl, mm_c = "Overvalue — sell zone begins",         "#FFA502"
-            else:              mm_lbl, mm_c = "Extreme Overvalue — near cycle top",   "#FF4757"
-            st.markdown(
-                f'<div style="display:flex;align-items:center;gap:14px;margin-bottom:4px">'
-                f'<div style="font-size:30px;font-weight:900;color:{mm_c}">{mm_val:.3f}</div>'
-                f'<div style="font-size:12px;color:{mm_c}">{mm_lbl}</div>'
-                f'</div>'
-                f'<div style="font-size:10px;color:#4A607A">Price / 200D MA'
-                f'{f" · 200DMA = ${ma200_val:,.0f}" if ma200_val else ""}</div>',
-                unsafe_allow_html=True)
+            try:
+                mm_f = float(mm_val)
+                if math.isnan(mm_f) or math.isinf(mm_f):
+                    st.caption("Mayer Multiple data unavailable.")
+                else:
+                    ma200_val = tech.get("ma200")
+                    if mm_f < 0.8:   mm_lbl, mm_c = "Extreme Undervalue — strong buy zone", "#00C896"
+                    elif mm_f < 1.0: mm_lbl, mm_c = "Undervalue",                           "#00C896"
+                    elif mm_f < 1.5: mm_lbl, mm_c = "Fair Value",                           "#A0AEC0"
+                    elif mm_f < 2.4: mm_lbl, mm_c = "Overvalue — sell zone begins",         "#FFA502"
+                    else:            mm_lbl, mm_c = "Extreme Overvalue — near cycle top",   "#FF4757"
+                    ma_note = f" · 200DMA = ${ma200_val:,.0f}" if (ma200_val and not (isinstance(ma200_val, float) and math.isnan(ma200_val))) else ""
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:14px;margin-bottom:4px">'
+                        f'<div style="font-size:30px;font-weight:900;color:{mm_c}">{mm_f:.3f}</div>'
+                        f'<div style="font-size:12px;color:{mm_c}">{mm_lbl}</div>'
+                        f'</div>'
+                        f'<div style="font-size:10px;color:#4A607A">Price / 200D MA'
+                        f'{ma_note}</div>',
+                        unsafe_allow_html=True)
+            except Exception:
+                st.caption("Mayer Multiple data unavailable.")
 
     with oc_col2:
         # MVRV Z-Score (hardcoded with date)
@@ -1612,23 +1699,38 @@ with tab_crypto:
         unsafe_allow_html=True)
     if hr:
         m1, m2, m3, m4 = st.columns(4)
-        if hr.get("hashrate_ehs"):
-            m1.metric("Hash Rate",          f"{hr['hashrate_ehs']:.1f} EH/s")
-        if hr.get("difficulty"):
-            m2.metric("Difficulty",         f"{hr['difficulty']/1e12:.2f}T")
-        if hr.get("difficulty_change_pct") is not None:
-            m3.metric("Next Adjustment",    f"{hr['difficulty_change_pct']:+.2f}%")
-        if hr.get("remaining_blocks"):
-            m4.metric("Blocks to Retarget", f"{hr['remaining_blocks']:,}")
+        _hr_ehs = hr.get("hashrate_ehs")
+        if _hr_ehs is not None and not (isinstance(_hr_ehs, float) and (math.isnan(_hr_ehs) or math.isinf(_hr_ehs))):
+            m1.metric("Hash Rate", f"{_hr_ehs:.1f} EH/s")
+        _diff = hr.get("difficulty")
+        if _diff is not None:
+            try:
+                _diff_t = float(_diff) / 1e12
+                if not math.isnan(_diff_t):
+                    m2.metric("Difficulty", f"{_diff_t:.2f}T")
+            except Exception:
+                pass
+        _dc = hr.get("difficulty_change_pct")
+        if _dc is not None and not (isinstance(_dc, float) and (math.isnan(_dc) or math.isinf(_dc))):
+            m3.metric("Next Adjustment", f"{float(_dc):+.2f}%")
+        _rb = hr.get("remaining_blocks")
+        if _rb is not None:
+            m4.metric("Blocks to Retarget", f"{int(_rb):,}")
     else:
         st.caption("Mining data temporarily unavailable (mempool.space).")
 
-    if cg.get("circulating") and cg.get("max_supply"):
-        pct_mined = cg["circulating"] / cg["max_supply"] * 100
-        s1, s2, s3 = st.columns(3)
-        s1.metric("Circulating Supply", f"{cg['circulating']/1e6:.3f}M BTC")
-        s2.metric("Max Supply",         "21.000M BTC")
-        s3.metric("% of 21M Mined",     f"{pct_mined:.2f}%")
+    _circ = cg.get("circulating")
+    _max  = cg.get("max_supply")
+    if _circ and _max:
+        try:
+            pct_mined = float(_circ) / float(_max) * 100
+            if not math.isnan(pct_mined):
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Circulating Supply", f"{float(_circ)/1e6:.3f}M BTC")
+                s2.metric("Max Supply",         "21.000M BTC")
+                s3.metric("% of 21M Mined",     f"{pct_mined:.2f}%")
+        except Exception:
+            pass
 
     st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
 
@@ -1688,15 +1790,18 @@ with tab_crypto:
 
     if tech.get("mayer_series") is not None:
         mm_ser = tech["mayer_series"].dropna()
-        fig_mm = line_chart(mm_ser, "Mayer Multiple (Price / 200D MA)", "ratio",
-                            hlines=[
-                                {"y": 2.4, "color": "#FF4757", "label": "2.4 — euphoric"},
-                                {"y": 1.0, "color": "#2D3E56", "label": "1.0 — fair"},
-                                {"y": 0.8, "color": "#00C896", "label": "0.8 — undervalue"},
-                            ], color="#F7931A", height=220)
-        st.plotly_chart(fig_mm, use_container_width=True)
-        st.caption("Mayer Multiple > 2.4 — historically near cycle tops. "
-                   "< 0.8 — historically strong accumulation zone.")
+        if len(mm_ser) > 1:
+            fig_mm = line_chart(mm_ser, "Mayer Multiple (Price / 200D MA)", "ratio",
+                                hlines=[
+                                    {"y": 2.4, "color": "#FF4757", "label": "2.4 — euphoric"},
+                                    {"y": 1.0, "color": "#2D3E56", "label": "1.0 — fair"},
+                                    {"y": 0.8, "color": "#00C896", "label": "0.8 — undervalue"},
+                                ], color="#F7931A", height=220)
+            st.plotly_chart(fig_mm, use_container_width=True)
+            st.caption("Mayer Multiple > 2.4 — historically near cycle tops. "
+                       "< 0.8 — historically strong accumulation zone.")
+        else:
+            st.caption("Mayer Multiple chart data unavailable.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1978,16 +2083,21 @@ with tab_markets:
             snap = latest_snapshot(meta["df"])
             if snap:
                 last, _, pct, _ = snap
-                cols[i % ncols].metric(meta["label"], f"{last:,.2f}", f"{pct:+.2f}%", help=t)
-            else:
-                cols[i % ncols].metric(meta["label"], "N/A")
+                last_s = fmt(last, 2)
+                pct_s  = fmt(pct, 2, "%", "+") if pct is not None and not (isinstance(pct, float) and (math.isnan(pct) or math.isinf(pct))) else None
+                if last_s != "—":
+                    cols[i % ncols].metric(meta["label"], f"{last_s}", pct_s, help=t)
+                # skip the card entirely if data is bad (avoids blank/NaN cards)
+            # if no snap, show nothing — avoids "N/A" grid cards
 
     def chart_grid(tickers, ncols=2, color="#2979FF"):
         cols = st.columns(ncols); i = 0
         for t in tickers:
             meta = market_data.get(t)
             if not meta or meta["df"] is None or meta["df"].empty: continue
-            chart_col(cols[i % ncols], meta["df"]["Close"],
+            close = meta["df"]["Close"].dropna()
+            if close.empty or len(close) < 2: continue
+            chart_col(cols[i % ncols], close,
                       f"{meta['label']} ({t})", "", t, color=color)
             i += 1
 
@@ -1999,7 +2109,8 @@ with tab_markets:
             meta = market_data.get(t)
             if not meta or meta["df"] is None or meta["df"].empty: continue
             beta = compute_beta(meta["df"]["Close"].pct_change(), br)
-            cols[i % ncols].metric(meta["label"], f"{beta:.2f}" if pd.notna(beta) else "N/A")
+            beta_s = fmt(beta, 2) if (pd.notna(beta) and not math.isinf(beta)) else "—"
+            cols[i % ncols].metric(meta["label"], beta_s)
             i += 1
 
     mkt_us, mkt_fi, mkt_comm, mkt_eu, mkt_sect = st.tabs(
@@ -2021,12 +2132,21 @@ with tab_markets:
         hyg_df = market_data.get("HYG", {}).get("df")
         lqd_df = market_data.get("LQD", {}).get("df")
         if hyg_df is not None and lqd_df is not None and not hyg_df.empty and not lqd_df.empty:
-            ratio = (hyg_df["Close"] / hyg_df["Close"].iloc[0] * 100) / \
-                    (lqd_df["Close"] / lqd_df["Close"].iloc[0] * 100)
-            st.plotly_chart(
-                line_chart(ratio, "HYG/LQD Relative Performance (rebased=100)", "ratio",
-                           color="#FFA502", height=220),
-                use_container_width=True)
+            try:
+                hyg_close = hyg_df["Close"].dropna()
+                lqd_close = lqd_df["Close"].dropna()
+                if not hyg_close.empty and not lqd_close.empty and hyg_close.iloc[0] and lqd_close.iloc[0]:
+                    ratio = (hyg_close / hyg_close.iloc[0] * 100) / (lqd_close / lqd_close.iloc[0] * 100)
+                    ratio = ratio.dropna()
+                    if len(ratio) > 1:
+                        st.plotly_chart(
+                            line_chart(ratio, "HYG/LQD Relative Performance (rebased=100)", "ratio",
+                                       color="#FFA502", height=220),
+                            use_container_width=True)
+                    else:
+                        st.caption("HYG/LQD chart data unavailable.")
+            except Exception:
+                st.caption("HYG/LQD chart data unavailable.")
         sect("Beta vs S&P 500")
         beta_grid(["TLT", "SHY", "TIP", "HYG", "LQD"], bench_ret)
 
@@ -2048,16 +2168,24 @@ with tab_markets:
     with mkt_sect:
         sects = ["XLF", "XLE", "XLK", "XLV", "XLU", "XLI"]
         st.caption("Sector rotation tells you where in the cycle: Fin/Ind = early · Tech = mid · Energy/Util/HC = late.")
+        st.caption("Prices update during market hours (Mon–Fri 9:30am–4pm ET). Charts use historical close prices.")
         snap_grid(sects)
         rebase = {}
         for t in sects:
             df2 = market_data.get(t, {}).get("df"); lbl = market_data.get(t, {}).get("label", t)
             if df2 is not None and not df2.empty:
-                rebase[lbl] = df2["Close"] / df2["Close"].iloc[0] * 100
+                try:
+                    base = df2["Close"].iloc[0]
+                    if base and not (isinstance(base, float) and math.isnan(base)):
+                        rebase[lbl] = df2["Close"] / base * 100
+                except Exception:
+                    pass
         if rebase:
             st.plotly_chart(
                 multi_line_chart(rebase, "Sector ETF Relative Performance (rebased=100)", "index", height=300),
                 use_container_width=True)
+        else:
+            st.caption("Chart data unavailable.")
         sect("Beta vs S&P 500")
         beta_grid(sects, bench_ret)
 
@@ -2108,15 +2236,15 @@ Copper decoupling from equities = growth crack forming
             with c2: st.progress(rpx / 100)
             c1, c2, c3 = st.columns(3)
             for i, (lbl, val, dlt) in enumerate([
-                ("3m10y", f"{sp3x:.2f}%" if sp3x is not None else "N/A",
+                ("3m10y", fmt(sp3x, 2, "%") if sp3x is not None else "—",
                           yield_curve_status(sp3x)["label"] if sp3x is not None else None),
-                ("2s10s", f"{sp2x:.2f}%" if sp2x is not None else "N/A",
+                ("2s10s", fmt(sp2x, 2, "%") if sp2x is not None else "—",
                           yield_curve_status(sp2x)["label"] if sp2x is not None else None),
-                ("Sahm",  f"{sahmx['value']:.2f}pp" if sahmx["value"] is not None else "N/A",
+                ("Sahm",  fmt(sahmx["value"], 2, "pp") if sahmx["value"] is not None else "—",
                           "Triggered" if sahmx["triggered"] else "Clear"),
-                ("HY OAS", f"{hy_lx:.2f}%" if hy_lx is not None else "N/A",
+                ("HY OAS", fmt(hy_lx, 2, "%") if hy_lx is not None else "—",
                            credit_spread_status(hy_lx)["label"] if hy_lx is not None else None),
-                ("CFNAI", f"{cfnai_lx:.2f}" if cfnai_lx is not None else "N/A",
+                ("CFNAI", fmt(cfnai_lx, 2) if cfnai_lx is not None else "—",
                           "Below trend" if (cfnai_lx or 0) < 0 else "Above trend"),
             ]):
                 [c1, c2, c3][i % 3].metric(lbl, val, dlt)
@@ -2192,11 +2320,12 @@ with tab_signals:
             ]
             for col, key, lbl, val, trend, wchg, mchg in _series_info:
                 with col:
-                    if val is not None:
+                    if val is not None and not (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
                         col.metric(lbl, f"{val:.2f}%", trend)
-                        col.caption(
-                            f"1W: {wchg:+.2f}pp  |  1M: {mchg:+.2f}pp"
-                            if (wchg is not None and mchg is not None) else "")
+                        _wchg_ok = wchg is not None and not (isinstance(wchg, float) and (math.isnan(wchg) or math.isinf(wchg)))
+                        _mchg_ok = mchg is not None and not (isinstance(mchg, float) and (math.isnan(mchg) or math.isinf(mchg)))
+                        if _wchg_ok and _mchg_ok:
+                            col.caption(f"1W: {wchg:+.2f}pp  |  1M: {mchg:+.2f}pp")
                     else:
                         col.metric(lbl, "—")
 
