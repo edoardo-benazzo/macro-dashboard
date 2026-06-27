@@ -56,6 +56,21 @@ def fmt(value, decimals: int = 2, suffix: str = "", prefix: str = "") -> str:
         return "—"
 
 
+def to_float(x):
+    """Extract a plain Python float from any scalar, numpy type, or pandas Series."""
+    try:
+        if x is None:
+            return None
+        if hasattr(x, 'iloc'):
+            x = x.iloc[-1]
+        if hasattr(x, 'item'):
+            return x.item()
+        v = float(x)
+        return None if (math.isnan(v) or math.isinf(v)) else v
+    except Exception:
+        return None
+
+
 def _safe_delta(value) -> str | None:
     """Return None instead of a NaN/None delta (for st.metric delta parameter)."""
     try:
@@ -2112,7 +2127,7 @@ with tab_markets:
                     last = float(closes.iloc[-1])
                     prev = float(closes.iloc[-2])
                     chg = ((last - prev) / prev) * 100
-                    st.metric(ticker, fmt(last, 2), f"{chg:+.2f}%")
+                    st.metric(ticker, fmt(to_float(last), 2), f"{chg:+.2f}%")
                 except Exception:
                     st.metric(ticker, "—")
 
@@ -2135,7 +2150,7 @@ with tab_markets:
             meta = market_data.get(t)
             if not meta or meta["df"] is None or meta["df"].empty: continue
             beta = compute_beta(meta["df"]["Close"].pct_change(), br)
-            beta_s = fmt(beta, 2) if (pd.notna(beta) and not math.isinf(beta)) else "—"
+            beta_s = fmt(to_float(beta), 2)
             cols[i % ncols].metric(meta["label"], beta_s)
             i += 1
 
@@ -2262,15 +2277,15 @@ Copper decoupling from equities = growth crack forming
             with c2: st.progress(rpx / 100)
             c1, c2, c3 = st.columns(3)
             for i, (lbl, val, dlt) in enumerate([
-                ("3m10y", fmt(sp3x, 2, "%") if sp3x is not None else "—",
+                ("3m10y", fmt(to_float(sp3x), 2, "%"),
                           yield_curve_status(sp3x)["label"] if sp3x is not None else None),
-                ("2s10s", fmt(sp2x, 2, "%") if sp2x is not None else "—",
+                ("2s10s", fmt(to_float(sp2x), 2, "%"),
                           yield_curve_status(sp2x)["label"] if sp2x is not None else None),
-                ("Sahm",  fmt(sahmx["value"], 2, "pp") if sahmx["value"] is not None else "—",
+                ("Sahm",  fmt(to_float(sahmx["value"]), 2, "pp"),
                           "Triggered" if sahmx["triggered"] else "Clear"),
-                ("HY OAS", fmt(hy_lx, 2, "%") if hy_lx is not None else "—",
+                ("HY OAS", fmt(to_float(hy_lx), 2, "%"),
                            credit_spread_status(hy_lx)["label"] if hy_lx is not None else None),
-                ("CFNAI", fmt(cfnai_lx, 2) if cfnai_lx is not None else "—",
+                ("CFNAI", fmt(to_float(cfnai_lx), 2),
                           "Below trend" if (cfnai_lx or 0) < 0 else "Above trend"),
             ]):
                 [c1, c2, c3][i % 3].metric(lbl, val, dlt)
