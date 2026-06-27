@@ -24,6 +24,10 @@ from data_fetchers import (
     compute_real_fed_funds, compute_btp_bund_spread, btp_bund_status,
     compute_recession_probability, compute_positioning_implication,
     compute_policy_tracker, series_trend, get_earnings_calendar,
+    # Modules 1-4
+    compute_inflation_expectations, compute_forward_rate_curve,
+    fetch_cot_data, compute_cot_signals,
+    compute_divergence_scanner, compute_cb_tracker_extended,
 )
 from news_fetcher import fetch_all_news, article_id, SOURCE_TIER_COLOR, detect_todays_releases
 from crypto_fetchers import (
@@ -577,9 +581,9 @@ if today_evts:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 (tab_score, tab_cal, tab_news,
- tab_crypto, tab_macro, tab_markets, tab_cross) = st.tabs([
+ tab_crypto, tab_macro, tab_markets, tab_cross, tab_signals) = st.tabs([
     "Scorecard", "Calendar", "News",
-    "Bitcoin", "Macro", "Markets", "Cross-Asset",
+    "Bitcoin", "Macro", "Markets", "Cross-Asset", "Signals",
 ])
 
 
@@ -2133,8 +2137,469 @@ Copper decoupling from equities = growth crack forming
             fig_gi.add_hline(y=2.0, line_dash="dash", line_color="#2D3E56", line_width=1)
             st.plotly_chart(fig_gi, use_container_width=True)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SIGNALS TAB (Modules 1-4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_signals:
+    if fred_data is None:
+        _alert("Enter your FRED API key in the sidebar to load signal data.", "info")
+    else:
+        sig_m1, sig_m2, sig_m3, sig_m4 = st.tabs([
+            "Market Expectations", "CFTC Positioning",
+            "Divergence Scanner", "Central Banks",
+        ])
+
+        # ══ MODULE 1 — Market-Implied Forward Signals ══════════════════════════
+        with sig_m1:
+            ie  = compute_inflation_expectations(fred_data)
+            frc = compute_forward_rate_curve(fred_data)
+
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin-bottom:8px">INFLATION EXPECTATIONS</p>',
+                unsafe_allow_html=True)
+
+            # Gap analysis row
+            gap10 = ie.get("gap10")
+            be10  = ie.get("be10")
+            gap_color = "#FF4757" if (gap10 or 0) > 0.5 else "#FFA502" if (gap10 or 0) > 0 else "#00C896"
+            if gap10 is not None:
+                st.markdown(
+                    f'<div style="border:1px solid #1A2540;border-left:4px solid {gap_color};'
+                    f'border-radius:6px;padding:12px 16px;margin-bottom:12px;'
+                    f'display:flex;align-items:center;gap:20px">'
+                    f'<div>'
+                    f'<div style="font-size:9px;color:#4A607A;text-transform:uppercase;'
+                    f'letter-spacing:0.9px">10Y Breakeven vs Fed 2% Target</div>'
+                    f'<div style="font-size:28px;font-weight:900;color:{gap_color}">'
+                    f'{gap10:+.2f}pp</div>'
+                    f'</div>'
+                    f'<div style="font-size:12px;color:{gap_color}">'
+                    f'{"Above target — inflation compensation exceeds Fed goal" if gap10 > 0 else "Below target — market confident of disinflation"}'
+                    f'</div></div>',
+                    unsafe_allow_html=True)
+
+            # Metrics grid
+            m1c1, m1c2, m1c3 = st.columns(3)
+            _series_info = [
+                (m1c1, "breakeven_10y", "10Y Breakeven", ie.get("be10"),
+                 ie.get("be10_trend"), ie.get("be10_wchg"), ie.get("be10_mchg")),
+                (m1c2, "breakeven_5y",  "5Y Breakeven", ie.get("be5"),
+                 ie.get("be5_trend"), ie.get("be5_wchg"), ie.get("be5_mchg")),
+                (m1c3, "breakeven_5y5y","5Y5Y Forward", ie.get("be55"),
+                 ie.get("be55_trend"), ie.get("be55_wchg"), ie.get("be55_mchg")),
+            ]
+            for col, key, lbl, val, trend, wchg, mchg in _series_info:
+                with col:
+                    if val is not None:
+                        col.metric(lbl, f"{val:.2f}%", trend)
+                        col.caption(
+                            f"1W: {wchg:+.2f}pp  |  1M: {mchg:+.2f}pp"
+                            if (wchg is not None and mchg is not None) else "")
+                    else:
+                        col.metric(lbl, "—")
+
+            # Breakevens chart
+            if any(ie.get(k) is not None for k in ["be10_s", "be5_s", "be55_s"]):
+                fig_be = multi_line_chart(
+                    {
+                        "10Y Breakeven": ie.get("be10_s"),
+                        "5Y Breakeven":  ie.get("be5_s"),
+                        "5Y5Y Forward":  ie.get("be55_s"),
+                    },
+                    "Inflation Breakevens — 3Y History", "%", height=280)
+                fig_be.add_hline(y=2.0, line_dash="dash", line_color="#FFA502",
+                                 line_width=1, annotation_text="2% Fed Target",
+                                 annotation_font_color="#FFA502")
+                st.plotly_chart(fig_be, use_container_width=True)
+
+            if ie.get("interpretation"):
+                st.info(ie["interpretation"])
+
+            with st.expander("📚 Why breakevens matter for rate traders"):
+                st.markdown("""
+**Breakeven inflation** is derived from TIPS (Treasury Inflation-Protected Securities) vs nominal Treasuries.
+It represents the market's *implied* average annual inflation over the specified period.
+
+- **10Y Breakeven (T10YIE):** What market expects CPI to average over 10 years.
+  If it exceeds 2.5% persistently, bond vigilantes typically sell Treasuries → yields rise.
+- **5Y5Y Forward (T5YIFR):** Strips out near-term distortions. This is what the Fed
+  watches most closely — a sustained rise above 2.5% signals loss of long-run credibility.
+- **Trading implication:** Rising breakevens = long TIPS/gold/commodities,
+  short duration. Falling = opposite. The *direction* matters more than the *level*.
+""")
+
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin-bottom:8px">RATE PATH EXPECTATIONS</p>',
+                unsafe_allow_html=True)
+
+            # Forward rate metrics
+            rp1, rp2, rp3, rp4 = st.columns(4)
+            for col, lbl, val in [
+                (rp1, "Current 2Y Yield", frc.get("y2")),
+                (rp2, "Current 10Y Yield", frc.get("y10")),
+                (rp3, "2Y Rate, 2Y Fwd",  frc.get("fwd_2y2")),
+                (rp4, "2Y Rate, 3Y Fwd",  frc.get("fwd_3y2")),
+            ]:
+                col.metric(lbl, f"{val:.2f}%" if val is not None else "—")
+
+            # Forward curve bar chart
+            fwd_vals = {
+                "Now": frc.get("y2"),
+                "2Y Fwd": frc.get("fwd_2y2"),
+                "3Y Fwd": frc.get("fwd_3y2"),
+                "10Y Now": frc.get("y10"),
+            }
+            if any(v is not None for v in fwd_vals.values()):
+                labels = [k for k, v in fwd_vals.items() if v is not None]
+                values = [v for v in fwd_vals.values() if v is not None]
+                fig_fwd = go.Figure(go.Bar(
+                    x=labels, y=values,
+                    marker_color=["#2979FF", "#4FC3F7", "#A78BFA", "#FFA726"],
+                    text=[f"{v:.2f}%" for v in values],
+                    textposition="outside",
+                ))
+                fig_fwd.update_layout(
+                    title="Rate Path — Current vs Forward Curve",
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(10,22,40,0.6)",
+                    yaxis=dict(gridcolor="#1A2540", title="%"),
+                    height=260, margin=dict(l=6, r=6, t=36, b=6),
+                    font=dict(family="Inter, sans-serif", size=11, color="#7B8FA5"),
+                )
+                st.plotly_chart(fig_fwd, use_container_width=True)
+
+            if frc.get("interpretation"):
+                st.info(frc["interpretation"])
+
+        # ══ MODULE 2 — CFTC Positioning ═══════════════════════════════════════
+        with sig_m2:
+            with st.spinner("Loading CFTC COT data..."):
+                cot_raw = fetch_cot_data()
+            cot = compute_cot_signals(cot_raw)
+
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin-bottom:4px">SPECULATIVE POSITIONING (CFTC COT)</p>',
+                unsafe_allow_html=True)
+            st.caption("Non-commercial (speculative) net long contracts — updated weekly (Tuesday release).")
+
+            # Summary horizontal bar chart
+            bar_labels = [r["label"] for r in cot if "net" in r]
+            bar_vals   = [r["net"] for r in cot if "net" in r]
+            bar_colors = ["#00C896" if v >= 0 else "#FF4757" for v in bar_vals]
+
+            if bar_vals:
+                fig_cot = go.Figure(go.Bar(
+                    x=bar_vals, y=bar_labels,
+                    orientation="h",
+                    marker_color=bar_colors,
+                    text=[f"{v:+,}" for v in bar_vals],
+                    textposition="auto",
+                    hovertemplate="%{y}: %{x:,.0f}<extra></extra>",
+                ))
+                fig_cot.update_layout(
+                    title="Net Speculative Positions (contracts)",
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(10,22,40,0.6)",
+                    xaxis=dict(gridcolor="#1A2540", title="Net Contracts"),
+                    height=280, margin=dict(l=8, r=8, t=36, b=8),
+                    font=dict(family="Inter, sans-serif", size=11, color="#7B8FA5"),
+                )
+                fig_cot.add_vline(x=0, line_color="#2D3E56", line_width=1)
+                st.plotly_chart(fig_cot, use_container_width=True)
+            else:
+                _alert("CFTC data unavailable — the public API may be temporarily down.", "warning")
+
+            # Signal cards
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+            valid_cot = [r for r in cot if "net" in r]
+            if valid_cot:
+                cot_cols = st.columns(len(valid_cot))
+                for i, row in enumerate(valid_cot):
+                    with cot_cols[i]:
+                        p = row["pct_rank"]
+                        sc = row["sig_color"]
+                        st.markdown(
+                            f'<div style="border:1px solid #1A2540;border-radius:6px;'
+                            f'padding:12px;text-align:center">'
+                            f'<div style="font-size:11px;font-weight:700;color:#E2E8F0;'
+                            f'margin-bottom:6px">{row["label"]}</div>'
+                            f'<div style="font-size:22px;font-weight:900;color:#FFFFFF">'
+                            f'{row["net"]:+,.0f}</div>'
+                            f'<div style="font-size:10px;color:#4A607A">net contracts</div>'
+                            f'<div style="font-size:14px;font-weight:700;color:{sc};'
+                            f'margin:8px 0 4px">{row["signal"]}</div>'
+                            f'<div style="font-size:10px;color:#4A607A">'
+                            f'52W Pct: {p}th</div>'
+                            f'<div style="font-size:10px;color:#2D3E56">'
+                            f'as of {row.get("date","")}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True)
+
+            # Historical positioning charts
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+            for row in valid_cot:
+                s = row.get("net_series")
+                if s is None or s.empty:
+                    continue
+                fig_h = _fig(title=f"{row['label']} — Net Speculative Positioning", height=200)
+                fig_h.add_trace(go.Bar(
+                    x=s.index, y=s.values,
+                    marker_color=["#00C896" if v >= 0 else "#FF4757" for v in s.values],
+                    hovertemplate="%{x|%Y-%m-%d}: %{y:,.0f}<extra></extra>",
+                ))
+                fig_h.add_hline(y=0, line_color="#2D3E56", line_width=1)
+                st.plotly_chart(fig_h, use_container_width=True)
+
+            for row in cot:
+                if "error" in row:
+                    st.caption(f"{row['label']}: data unavailable ({row['error'][:80]})")
+
+            with st.expander("📚 What is CFTC positioning and why does it matter?"):
+                st.markdown("""
+**The CFTC (Commodity Futures Trading Commission)** publishes the Commitments of Traders
+(COT) report every Friday, covering positions as of the previous Tuesday.
+
+**Non-commercial (speculative) positions** are held by hedge funds, CTA trend-followers,
+and discretionary macro funds — the most sentiment-driven part of the market.
+
+**Net Long = Longs − Shorts.** A large net long means speculators are collectively betting
+on price appreciation.
+
+**Why crowded positioning creates reversal risk:**
+When 80%+ of speculators are long (percentile rank >80%), they have already bought.
+There are fewer incremental buyers left — but many potential sellers. A small price
+reversal forces stop-losses, creating a cascade. Historically, crowded extremes
+*precede* sharp reversals within 4-8 weeks.
+
+**Trading implication:** Don't short just because positioning is crowded — you need
+a catalyst. But it tells you the *risk/reward* is asymmetric. Crowded longs = downside
+risk disproportionate. Crowded shorts = upside squeeze risk.
+""")
+
+        # ══ MODULE 3 — Divergence Scanner ══════════════════════════════════════
+        with sig_m3:
+            with st.spinner("Scanning for divergences..."):
+                divergences = compute_divergence_scanner(market_data, fred_data)
+
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin-bottom:8px">CROSS-ASSET DIVERGENCE SCANNER</p>',
+                unsafe_allow_html=True)
+            st.caption("Flags when asset prices are moving against what macro fundamentals imply.")
+
+            _STATUS_META = {
+                "Red":   ("#FF4757", "rgba(255,71,87,0.08)",  "🔴 DIVERGENCE"),
+                "Amber": ("#FFA502", "rgba(255,165,2,0.08)",  "🟡 MILD"),
+                "Green": ("#00C896", "rgba(0,200,150,0.06)",  "🟢 ALIGNED"),
+                "Grey":  ("#4A607A", "rgba(74,96,122,0.06)",  "⬜ N/A"),
+            }
+
+            red_count   = sum(1 for d in divergences if d["status"] == "Red")
+            amber_count = sum(1 for d in divergences if d["status"] == "Amber")
+            green_count = sum(1 for d in divergences if d["status"] == "Green")
+
+            scan_col1, scan_col2, scan_col3 = st.columns(3)
+            scan_col1.metric("🔴 Divergences", red_count)
+            scan_col2.metric("🟡 Mild",        amber_count)
+            scan_col3.metric("🟢 Aligned",     green_count)
+
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+            for div in divergences:
+                status = div["status"]
+                meta   = _STATUS_META.get(status, _STATUS_META["Grey"])
+                color, bg, label = meta
+                first  = div.get("first_seen")
+                st.markdown(
+                    f'<div style="border:1px solid #1A2540;border-left:4px solid {color};'
+                    f'background:{bg};border-radius:6px;padding:12px 16px;margin-bottom:8px">'
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:center;margin-bottom:6px">'
+                    f'<div style="font-size:14px;font-weight:700;color:#E2E8F0">'
+                    f'{div["name"]}</div>'
+                    f'<div style="font-size:11px;font-weight:700;color:{color}">{label}</div>'
+                    f'</div>'
+                    f'<div style="font-size:12px;color:#A0AEC0;line-height:1.5">'
+                    f'{div["description"]}</div>'
+                    + (f'<div style="font-size:10px;color:#2D3E56;margin-top:6px">'
+                       f'Signal noted: {first}</div>' if first else "")
+                    + '</div>',
+                    unsafe_allow_html=True)
+
+            with st.expander("📚 Why divergences signal opportunity"):
+                st.markdown("""
+**Cross-asset divergences** occur when two markets that historically move together
+(or inversely) temporarily de-couple. They matter because:
+
+1. **They reveal mispricing.** One market is "wrong" — it must eventually converge.
+2. **They signal regime shifts.** When traditional relationships break, a new macro
+   theme is emerging (e.g., stagflation breaking the equity-bond correlation).
+3. **They create asymmetric trades.** You know which direction the correction should go.
+
+**Rules of thumb:**
+- A divergence lasting <2 weeks is noise. >4 weeks is a signal worth trading.
+- Divergences in *multiple* asset pairs simultaneously are far more significant.
+- Always check positioning (Module 2) — crowded positioning often explains the divergence.
+
+**Classic historical example:**
+Late 2021 — Gold fell while real yields fell (Module 3 flag). This resolved via
+gold recovering ~15% in early 2022 as the real rate narrative changed.
+""")
+
+        # ══ MODULE 4 — Central Bank Monitor ════════════════════════════════════
+        with sig_m4:
+            cb = compute_cb_tracker_extended(fred_data)
+
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin-bottom:8px">CENTRAL BANK MONITOR</p>',
+                unsafe_allow_html=True)
+
+            _DIR_COLOR = {"CUTS": "#00C896", "HIKES": "#FF4757", "HOLD": "#FFA502"}
+            _STANCE_COLOR = {
+                "Restrictive": "#FF4757", "Accommodative": "#00C896", "Neutral": "#FFA502",
+            }
+
+            # 4-column summary cards
+            banks = [
+                ("Federal Reserve", "fed",  "🇺🇸"),
+                ("ECB",             "ecb",  "🇪🇺"),
+                ("Bank of England", "boe",  "🇬🇧"),
+                ("Bank of Japan",   "boj",  "🇯🇵"),
+            ]
+            cb_cols = st.columns(4)
+            for i, (name, key, flag_emoji) in enumerate(banks):
+                b = cb.get(key, {})
+                rate      = b.get("rate")
+                real      = b.get("real_rate")
+                move      = b.get("implied_move") or "—"
+                stance    = b.get("stance") or "—"
+                mv_c      = _DIR_COLOR.get(move, "#A0AEC0")
+                st_c      = _STANCE_COLOR.get(stance, "#A0AEC0")
+                neutral_r = b.get("neutral")
+
+                extra = ""
+                if key == "fed" and b.get("next_meeting"):
+                    extra = (f'<div style="font-size:10px;color:#4A607A;margin-top:4px">'
+                             f'Next FOMC: {b["next_meeting"].strftime("%b %d, %Y")}</div>')
+                if key == "boj" and b.get("ycc_note"):
+                    extra = (f'<div style="font-size:10px;color:#4A607A;margin-top:4px">'
+                             f'{b["ycc_note"]}</div>')
+
+                with cb_cols[i]:
+                    st.markdown(
+                        f'<div style="border:1px solid #1A2540;border-radius:6px;padding:14px 12px">'
+                        f'<div style="font-size:9px;font-weight:700;color:#4A607A;'
+                        f'text-transform:uppercase;letter-spacing:0.9px;margin-bottom:6px">'
+                        f'{flag_emoji} {name}</div>'
+                        f'<div style="font-size:26px;font-weight:900;color:#FFFFFF">'
+                        f'{"—" if rate is None else f"{rate:.2f}%"}</div>'
+                        f'<div style="font-size:10px;color:#4A607A">Policy Rate</div>'
+                        f'<div style="margin:8px 0 4px;padding-top:6px;border-top:1px solid #1A2540">'
+                        f'<span style="font-size:9px;color:#4A607A">Next move: </span>'
+                        f'<span style="font-size:13px;font-weight:700;color:{mv_c}">{move}</span>'
+                        f'</div>'
+                        f'<div style="font-size:10px;color:{st_c}">{stance}</div>'
+                        + (f'<div style="font-size:10px;color:#4A607A">Real rate: '
+                           f'{real:+.2f}%</div>' if real is not None else "")
+                        + (f'<div style="font-size:10px;color:#2D3E56">Neutral: '
+                           f'~{neutral_r:.1f}%</div>' if neutral_r is not None else "")
+                        + extra
+                        + '</div>',
+                        unsafe_allow_html=True)
+
+            st.caption(
+                "Implied next move: 2Y yield vs policy rate spread."
+                " Spread < -0.25% → CUTS; > +0.25% → HIKES; else HOLD.")
+
+            st.markdown('<hr class="sect-div">', unsafe_allow_html=True)
+
+            # Timeline chart — all 4 policy rates
+            rate_series = {}
+            for _, key, _ in banks:
+                b = cb.get(key, {})
+                s = b.get("series")
+                label_map = {"fed": "Fed", "ecb": "ECB", "boe": "BOE", "boj": "BOJ"}
+                if s is not None and not s.empty:
+                    # Last 5 years
+                    cutoff = pd.Timestamp.now() - pd.DateOffset(years=5)
+                    s_filt = s[s.index >= cutoff]
+                    if not s_filt.empty:
+                        rate_series[label_map[key]] = s_filt
+            if rate_series:
+                fig_cb = multi_line_chart(rate_series, "Central Bank Policy Rates — 5Y", "%", height=300)
+                st.plotly_chart(fig_cb, use_container_width=True)
+
+            # Divergence note
+            fed_b = cb.get("fed", {})
+            ecb_b = cb.get("ecb", {})
+            boe_b = cb.get("boe", {})
+            boj_b = cb.get("boj", {})
+
+            cutting = [b for b in ["Fed", "ECB", "BOE"] if cb.get(b.lower().replace(" ",""), {}).get("implied_move") == "CUTS"]
+            hiking  = [b for b in ["Fed", "ECB", "BOE"] if cb.get(b.lower().replace(" ",""), {}).get("implied_move") == "HIKES"]
+
+            divergence_text = []
+            fed_move = fed_b.get("implied_move")
+            ecb_move = ecb_b.get("implied_move")
+            boe_move = boe_b.get("implied_move")
+            boj_move = boj_b.get("implied_move")
+
+            if fed_move and ecb_move and fed_move != ecb_move:
+                divergence_text.append(
+                    f"Fed ({fed_move}) and ECB ({ecb_move}) are out of sync — "
+                    f"this divergence typically creates EUR/USD trending conditions. "
+                    f"Cutting central bank's currency tends to weaken relative to the other."
+                )
+            if boj_move == "HIKES" and fed_move == "CUTS":
+                divergence_text.append(
+                    "BOJ hiking while Fed cuts — classic JPY tailwind. Yen carry trades "
+                    "unwind when the rate differential narrows. Watch USD/JPY for sharp moves."
+                )
+            if not divergence_text:
+                divergence_text.append("No major policy divergence flagged at this time.")
+
+            st.markdown(
+                '<p style="font-size:12px;font-weight:700;color:#A0AEC0;'
+                'letter-spacing:0.6px;margin-bottom:6px">POLICY DIVERGENCE & FX IMPLICATIONS</p>',
+                unsafe_allow_html=True)
+            for txt in divergence_text:
+                st.info(txt)
+
+            with st.expander("📚 How central bank divergence drives FX"):
+                st.markdown("""
+**Interest rate differentials are the single most powerful driver of exchange rates**
+over medium-term (3-24 month) horizons.
+
+**The mechanism:**
+1. Fed hikes while ECB holds → US rates > EU rates
+2. Capital flows from EUR-denominated assets into USD assets chasing yield
+3. Demand for USD rises → EUR/USD falls
+
+**The textbook view vs reality:**
+- Textbook: Higher rates = stronger currency (always)
+- Reality: The *change in expectation* matters more than the level.
+  A Fed that's hiking but "almost done" is less bullish for USD than one just starting.
+
+**The yen carry trade:**
+BOJ's ultra-low rates let investors borrow cheap JPY, invest in higher-yielding assets.
+When BOJ raises rates, this unwind happens violently — JPY spikes, risky assets sell off.
+Watch USD/JPY as the global risk sentiment barometer when BOJ is active.
+
+**Key rule:** When two major central banks diverge on policy direction,
+that currency pair enters a trending (not ranging) environment — your alpha.
+""")
+
+
 st.markdown(
     '<p style="font-size:10px;color:#1A2540;text-align:center;margin-top:28px">'
     'FRED · Yahoo Finance · CoinGecko · mempool.space · Alternative.me · Trading Economics (optional) · '
-    'For informational purposes only. Not investment advice.</p>',
+    'CFTC (COT data) · For informational purposes only. Not investment advice.</p>',
     unsafe_allow_html=True)

@@ -6,6 +6,7 @@ import concurrent.futures
 import datetime as dt
 
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 from fredapi import Fred
@@ -563,3 +564,559 @@ def get_earnings_calendar() -> list[dict]:
 
     result.sort(key=lambda x: x["days"])
     return result
+
+
+# ── Module 1: Market-implied forward signals ──────────────────────────────────
+
+def _trend_label(series: pd.Series, periods: int = 4) -> str:
+    """Rising / Falling / Stable based on change over last `periods` obs."""
+    if series is None or series.dropna().empty:
+        return "—"
+    s = series.dropna()
+    if len(s) < periods + 1:
+        return "—"
+    chg = s.iloc[-1] - s.iloc[-periods - 1]
+    if chg > 0.05:  return "Rising ↑"
+    if chg < -0.05: return "Falling ↓"
+    return "Stable →"
+
+
+def _chg_label(val: float | None, period: str) -> str:
+    if val is None or pd.isna(val):
+        return "—"
+    sign = "+" if val >= 0 else ""
+    return f"{sign}{val:.2f}pp ({period})"
+
+
+def compute_inflation_expectations(fred_data: dict) -> dict:
+    """
+    Module 1: Summarise inflation expectations signals.
+    Returns dict with current values, trend labels, 1w/1m changes, interpretation.
+    """
+    FED_TARGET = 2.0
+
+    def _extract(key: str):
+        entry = fred_data.get(key, {})
+        s = entry.get("series")
+        if s is None or s.dropna().empty:
+            return None, None
+        s = s.dropna()
+        return s, s.iloc[-1]
+
+    be10_s, be10 = _extract("breakeven_10y")
+    be5_s,  be5  = _extract("breakeven_5y")
+    be55_s, be55 = _extract("breakeven_5y5y")
+
+    def _w_chg(s: pd.Series | None) -> float | None:
+        if s is None or len(s) < 2: return None
+        return round(s.iloc[-1] - s.iloc[-2], 3)
+
+    def _m_chg(s: pd.Series | None) -> float | None:
+        if s is None or len(s) < 5: return None
+        return round(s.iloc[-1] - s.iloc[-5], 3)
+
+    gap10 = round(be10 - FED_TARGET, 2) if be10 is not None else None
+
+    # Auto-generated interpretation
+    interp_parts = []
+    if be10 is not None:
+        dir_w = _w_chg(be10_s)
+        trend = "rising" if (dir_w or 0) > 0 else "falling" if (dir_w or 0) < 0 else "stable"
+        above = "above" if be10 > FED_TARGET else "below"
+        interp_parts.append(
+            f"The bond market is pricing {be10:.2f}% average inflation over 10 years — "
+            f"{above} the Fed's 2% target and {trend} over the past week, "
+            f"suggesting markets are becoming {'less' if trend == 'falling' else 'more'} "
+            f"confident inflation {'remains' if above == 'above' else 'returns to'} target."
+        )
+    if be55 is not None:
+        anchor = "well-anchored" if be55 < 2.3 else "drifting higher" if be55 < 2.7 else "unanchored"
+        interp_parts.append(
+            f"The 5Y5Y forward rate ({be55:.2f}%) measures what markets expect inflation to average "
+            f"from 5 to 10 years out — currently {anchor}. "
+            f"This is the Fed's credibility gauge: persistently above 2.5% signals loss of trust."
+        )
+
+    return {
+        "be10":       be10,   "be10_s":  be10_s,
+        "be5":        be5,    "be5_s":   be5_s,
+        "be55":       be55,   "be55_s":  be55_s,
+        "gap10":      gap10,
+        "be10_trend": _trend_label(be10_s),
+        "be5_trend":  _trend_label(be5_s),
+        "be55_trend": _trend_label(be55_s),
+        "be10_wchg":  _w_chg(be10_s),
+        "be10_mchg":  _m_chg(be10_s),
+        "be5_wchg":   _w_chg(be5_s),
+        "be5_mchg":   _m_chg(be5_s),
+        "be55_wchg":  _w_chg(be55_s),
+        "be55_mchg":  _m_chg(be55_s),
+        "interpretation": " ".join(interp_parts) if interp_parts else None,
+    }
+
+
+def compute_forward_rate_curve(fred_data: dict) -> dict:
+    """Module 1: Forward rate curve vs current yields."""
+    def _latest_val(key: str) -> float | None:
+        entry = fred_data.get(key, {})
+        s = entry.get("series")
+        if s is None or s.dropna().empty: return None
+        return s.dropna().iloc[-1]
+
+    y2   = _latest_val("2y_yield")
+    y10  = _latest_val("10y_yield")
+    f2y2 = _latest_val("fwd_rate_2y2y")
+    f3y2 = _latest_val("fwd_rate_3y2y")
+
+    interp = None
+    if f2y2 is not None and y2 is not None:
+        diff = f2y2 - y2
+        if diff < -0.25:
+            interp = (
+                f"The forward curve implies the 2Y rate will fall from {y2:.2f}% to ~{f2y2:.2f}% "
+                f"over the next 2 years ({diff:+.2f}pp), suggesting the market is pricing meaningful "
+                f"rate cuts ahead — consistent with easing cycle expectations."
+            )
+        elif diff > 0.25:
+            interp = (
+                f"Forward rates imply the 2Y rate will rise from {y2:.2f}% to ~{f2y2:.2f}% "
+                f"over 2 years ({diff:+.2f}pp) — the market is not pricing cuts, "
+                f"suggesting a higher-for-longer expectation."
+            )
+        else:
+            interp = (
+                f"Forward rates ({f2y2:.2f}%) are roughly flat vs the current 2Y ({y2:.2f}%), "
+                f"suggesting the market expects rates to stay near current levels for 2+ years."
+            )
+
+    return {
+        "y2": y2, "y10": y10, "fwd_2y2": f2y2, "fwd_3y2": f3y2,
+        "interpretation": interp,
+    }
+
+
+# ── Module 2: CFTC Commitment of Traders ──────────────────────────────────────
+
+_COT_ASSETS = {
+    "EUR/USD":   "EURO FX",
+    "10Y Notes": "10-YEAR U.S. TREASURY NOTES",
+    "Gold":      "GOLD",
+    "Crude Oil": "CRUDE OIL, LIGHT SWEET",
+    "S&P 500":   "S&P 500 CONSOLIDATED",
+}
+
+_COT_URL = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
+
+
+@st.cache_data(ttl=60 * 60 * 24)
+def fetch_cot_data() -> dict:
+    """
+    CFTC Commitment of Traders — net speculative (non-commercial) positions.
+    Source: CFTC public Socrata API. Updates weekly (Tuesday release).
+    """
+    results = {}
+    for label, mkt_substr in _COT_ASSETS.items():
+        try:
+            r = requests.get(
+                _COT_URL,
+                params={
+                    "$limit": 104,
+                    "$order": "report_date_as_yyyy_mm_dd DESC",
+                    "$where": f"market_and_exchange_names like '%{mkt_substr}%'",
+                    "$select": ("report_date_as_yyyy_mm_dd,"
+                                "noncomm_positions_long_all,"
+                                "noncomm_positions_short_all,"
+                                "open_interest_all"),
+                },
+                headers={"User-Agent": "MacroDashboard/2.0"},
+                timeout=20,
+            )
+            r.raise_for_status()
+            rows = r.json()
+            if not rows:
+                results[label] = {"error": "No data returned"}
+                continue
+
+            dates, longs, shorts, ois = [], [], [], []
+            for row in rows:
+                try:
+                    d   = pd.to_datetime(row["report_date_as_yyyy_mm_dd"])
+                    lng = int(float(row.get("noncomm_positions_long_all")  or 0))
+                    sht = int(float(row.get("noncomm_positions_short_all") or 0))
+                    oi  = int(float(row.get("open_interest_all")           or 0))
+                    dates.append(d); longs.append(lng)
+                    shorts.append(sht); ois.append(oi)
+                except (ValueError, TypeError, KeyError):
+                    continue
+
+            if not dates:
+                results[label] = {"error": "Could not parse rows"}
+                continue
+
+            df = pd.DataFrame({"long": longs, "short": shorts, "oi": ois},
+                              index=dates).sort_index()
+            df["net"] = df["long"] - df["short"]
+
+            net_now = int(df["net"].iloc[-1])
+            window  = df["net"].iloc[-52:] if len(df) >= 52 else df["net"]
+            pct_rank = round((window < net_now).sum() / len(window) * 100)
+
+            results[label] = {
+                "net":        net_now,
+                "net_series": df["net"],
+                "long":       int(df["long"].iloc[-1]),
+                "short":      int(df["short"].iloc[-1]),
+                "oi":         int(df["oi"].iloc[-1]) if df["oi"].iloc[-1] else None,
+                "pct_rank":   pct_rank,
+                "date":       df.index[-1].date().isoformat(),
+            }
+        except Exception as e:
+            results[label] = {"error": str(e)}
+    return results
+
+
+def compute_cot_signals(cot_data: dict) -> list[dict]:
+    """Module 2: Add crowding signal to each COT asset."""
+    out = []
+    for label, d in cot_data.items():
+        if "error" in d:
+            out.append({"label": label, "error": d["error"]})
+            continue
+        p = d["pct_rank"]
+        if p >= 80:
+            signal, sig_color = "Crowded Long 🔴", "#FF4757"
+        elif p <= 20:
+            signal, sig_color = "Crowded Short 🔴", "#FF4757"
+        else:
+            signal, sig_color = "Neutral 🟢", "#00C896"
+        out.append({
+            "label": label,
+            "net": d["net"],
+            "long": d["long"],
+            "short": d["short"],
+            "pct_rank": p,
+            "signal": signal,
+            "sig_color": sig_color,
+            "net_series": d.get("net_series"),
+            "date": d.get("date"),
+        })
+    return out
+
+
+# ── Module 3: Cross-Asset Divergence Scanner ──────────────────────────────────
+
+def compute_divergence_scanner(
+    market_data: dict,
+    fred_data: dict,
+) -> list[dict]:
+    """
+    Scan for cross-asset divergences using 1-month changes.
+    market_data: dict from load_all_markets
+    fred_data: dict from load_all_fred
+    Returns list of divergence signals.
+    """
+
+    def _mkt_chg_pct(ticker: str, days: int = 21) -> float | None:
+        df = (market_data.get(ticker) or {}).get("df")
+        if df is None or df.empty or len(df) < days + 1:
+            return None
+        c = df["Close"].dropna()
+        if len(c) < days + 1:
+            return None
+        return (c.iloc[-1] / c.iloc[-days - 1] - 1) * 100
+
+    def _fred_chg(key: str, periods: int = 1) -> float | None:
+        entry = fred_data.get(key, {})
+        s = entry.get("series")
+        if s is None or s.dropna().empty:
+            return None
+        s = s.dropna()
+        if len(s) < periods + 1:
+            return None
+        return s.iloc[-1] - s.iloc[-periods - 1]
+
+    def _fred_latest(key: str) -> float | None:
+        entry = fred_data.get(key, {})
+        s = entry.get("series")
+        if s is None or s.dropna().empty:
+            return None
+        return s.dropna().iloc[-1]
+
+    now_label = dt.date.today().strftime("%b %d")
+    results = []
+
+    # 1. USD/Rates Divergence
+    dxy_chg  = _mkt_chg_pct("DX-Y.NYB", 21)
+    us2y_chg = _fred_chg("2y_yield", 2)
+    eu2y_chg = _fred_chg("eu_2y_yield", 2)
+    diff_chg = None
+    if us2y_chg is not None and eu2y_chg is not None:
+        diff_chg = us2y_chg - eu2y_chg
+
+    if dxy_chg is not None and diff_chg is not None:
+        if dxy_chg > 0.5 and diff_chg < -0.1:
+            sev = "Red" if abs(diff_chg) > 0.3 else "Amber"
+            desc = (f"DXY strengthening (+{dxy_chg:.1f}% this month) while US–EU rate differential "
+                    f"is narrowing ({diff_chg:+.2f}pp). Historically USD weakens when rate advantage "
+                    f"erodes. Potential reversal risk for USD longs.")
+        elif dxy_chg < -0.5 and diff_chg > 0.1:
+            sev = "Amber"
+            desc = (f"DXY weakening ({dxy_chg:.1f}% this month) despite rate differential widening "
+                    f"({diff_chg:+.2f}pp). Rate support not translating to USD strength — "
+                    f"watch for catch-up rally.")
+        else:
+            sev = "Green"
+            desc = "USD direction broadly consistent with rate differential movement."
+    else:
+        sev, desc = "Grey", "Insufficient data for USD/rates comparison."
+    results.append({
+        "name": "USD / Rate Differential",
+        "status": sev, "description": desc,
+        "first_seen": now_label if sev in ("Red", "Amber") else None,
+    })
+
+    # 2. Equity/Credit Divergence
+    sp_chg = _mkt_chg_pct("^GSPC", 21)
+    hy_chg = _fred_chg("hy_oas", 2)
+
+    if sp_chg is not None and hy_chg is not None:
+        if sp_chg > 2.0 and hy_chg > 0.2:
+            sev = "Red" if sp_chg > 5.0 and hy_chg > 0.5 else "Amber"
+            desc = (f"S&P 500 up {sp_chg:.1f}% while HY credit spreads widened "
+                    f"{hy_chg:+.2f}pp. Credit typically leads equity corrections — "
+                    f"this divergence historically resolves via equity weakness.")
+        elif sp_chg < -2.0 and hy_chg < -0.1:
+            sev = "Green"
+            desc = f"Equity and credit risk-off in sync (S&P {sp_chg:.1f}%, HY OAS {hy_chg:+.2f}pp)."
+        else:
+            sev = "Green"
+            desc = "Equities and credit spreads broadly aligned."
+    else:
+        sev, desc = "Grey", "Insufficient data."
+    results.append({
+        "name": "Equity / Credit",
+        "status": sev, "description": desc,
+        "first_seen": now_label if sev in ("Red", "Amber") else None,
+    })
+
+    # 3. Gold/Real Rates Divergence
+    gold_chg  = _mkt_chg_pct("GC=F", 21)
+    real_chg  = _fred_chg("real_10y", 2)
+    real_10y  = _fred_latest("real_10y")
+
+    if gold_chg is not None and real_chg is not None:
+        if gold_chg < -2.0 and real_chg < -0.1:
+            sev = "Red" if gold_chg < -5.0 else "Amber"
+            desc = (f"Gold falling ({gold_chg:.1f}%) while real yields also falling "
+                    f"({real_chg:+.2f}pp). Gold typically rises when real yields fall — "
+                    f"this divergence suggests supply/positioning pressure or USD strength "
+                    f"overriding the traditional relationship.")
+        elif gold_chg > 2.0 and real_chg > 0.15:
+            sev = "Amber"
+            desc = (f"Gold rising ({gold_chg:+.1f}%) despite real yields rising "
+                    f"({real_chg:+.2f}pp). Historically gold underperforms in rising real rate "
+                    f"environments — geopolitical/safe-haven demand may be driving this.")
+        else:
+            sev = "Green"
+            desc = "Gold and real yields broadly aligned (inverse relationship intact)."
+    else:
+        sev, desc = "Grey", "Insufficient data."
+    results.append({
+        "name": "Gold / Real Rates",
+        "status": sev, "description": desc,
+        "first_seen": now_label if sev in ("Red", "Amber") else None,
+    })
+
+    # 4. Oil/Growth Divergence
+    oil_chg   = _mkt_chg_pct("CL=F", 21)
+    cfnai_now = _fred_latest("cfnai")
+
+    if oil_chg is not None and cfnai_now is not None:
+        if oil_chg > 5.0 and cfnai_now < -0.2:
+            sev = "Red" if oil_chg > 10.0 and cfnai_now < -0.5 else "Amber"
+            desc = (f"Oil up {oil_chg:.1f}% while CFNAI signals below-trend growth ({cfnai_now:.2f}). "
+                    f"Supply-driven oil rally into a growth slowdown typically precedes demand "
+                    f"destruction and eventual price reversal.")
+        elif oil_chg < -5.0 and cfnai_now > 0.2:
+            sev = "Amber"
+            desc = (f"Oil falling ({oil_chg:.1f}%) despite above-trend growth (CFNAI {cfnai_now:.2f}). "
+                    f"Unusual — may signal supply glut or demand shift. Watch for correction.")
+        else:
+            sev = "Green"
+            desc = "Oil price broadly consistent with growth trajectory."
+    else:
+        sev, desc = "Grey", "Insufficient data."
+    results.append({
+        "name": "Oil / Growth",
+        "status": sev, "description": desc,
+        "first_seen": now_label if sev in ("Red", "Amber") else None,
+    })
+
+    # 5. Inflation Expectations Divergence
+    be10_now  = _fred_latest("breakeven_10y")
+    be10_chg  = _fred_chg("breakeven_10y", 4)
+    cpi_now   = _fred_latest("cpi_yoy")
+
+    if be10_now is not None and cpi_now is not None:
+        if be10_chg is not None and be10_chg < -0.1 and cpi_now > 3.0:
+            sev = "Red" if be10_chg < -0.3 else "Amber"
+            desc = (f"10Y breakeven falling ({be10_chg:+.2f}pp over 1M) while CPI remains "
+                    f"elevated at {cpi_now:.2f}%. Market is pricing disinflation ahead — "
+                    f"but if CPI stays sticky this becomes a mispricing opportunity "
+                    f"(breakevens likely to reverse higher).")
+        elif be10_chg is not None and be10_chg > 0.2 and cpi_now < 2.5:
+            sev = "Amber"
+            desc = (f"Breakevens rising ({be10_chg:+.2f}pp over 1M) while CPI is relatively "
+                    f"contained at {cpi_now:.2f}%. Market may be overpricing reflation risk — "
+                    f"watch for breakeven compression if CPI prints cool.")
+        else:
+            sev = "Green"
+            desc = "Inflation expectations broadly consistent with actual CPI trend."
+    else:
+        sev, desc = "Grey", "Insufficient data."
+    results.append({
+        "name": "Inflation Expectations / CPI",
+        "status": sev, "description": desc,
+        "first_seen": now_label if sev in ("Red", "Amber") else None,
+    })
+
+    return results
+
+
+# ── Module 4: Extended Central Bank Tracker ───────────────────────────────────
+
+_NEXT_FOMC_DATES = [
+    dt.date(2025, 7, 30),
+    dt.date(2025, 9, 17),
+    dt.date(2025, 10, 29),
+    dt.date(2025, 12, 10),
+    dt.date(2026, 1, 28),
+    dt.date(2026, 3, 18),
+    dt.date(2026, 4, 29),
+    dt.date(2026, 6, 17),
+    dt.date(2026, 7, 29),
+    dt.date(2026, 9, 16),
+    dt.date(2026, 10, 28),
+    dt.date(2026, 12, 9),
+]
+
+
+def next_fomc_date() -> dt.date | None:
+    today = dt.date.today()
+    future = [d for d in _NEXT_FOMC_DATES if d >= today]
+    return future[0] if future else None
+
+
+def _policy_stance(real_rate: float | None, neutral: float = 0.0) -> str:
+    if real_rate is None:
+        return "—"
+    if real_rate > neutral + 0.5:   return "Restrictive"
+    if real_rate < neutral - 0.5:   return "Accommodative"
+    return "Neutral"
+
+
+def compute_cb_tracker_extended(fred_data: dict) -> dict:
+    """
+    Module 4: Policy tracker for Fed, ECB, BOE, BOJ.
+    Returns dict with all four banks' current rate, market-implied move,
+    real rate, and policy stance.
+    """
+    def _latest(key: str) -> float | None:
+        entry = fred_data.get(key, {})
+        s = entry.get("series")
+        if s is None or s.dropna().empty: return None
+        return s.dropna().iloc[-1]
+
+    fed  = _latest("fed_funds")
+    us2y = _latest("2y_yield")
+    cpi  = _latest("cpi_yoy")
+    core_pce = _latest("core_pce_yoy")
+
+    ecb   = _latest("ecb_deposit_rate")
+    eu2y  = _latest("eu_2y_yield")
+    hicp  = _latest("eu_hicp")
+
+    boe   = _latest("boe_rate")
+    uk2y  = _latest("uk_2y_yield")
+    uk_cpi = _latest("uk_cpi_yoy")
+
+    boj   = _latest("boj_rate")
+    jp2y  = _latest("jp_2y_yield")
+    jp_cpi = _latest("jp_cpi_yoy")
+
+    def _implied_move(policy: float | None, yr2: float | None) -> str | None:
+        if policy is None or yr2 is None: return None
+        spread = yr2 - policy
+        if spread < -0.25: return "CUTS"
+        if spread > 0.25:  return "HIKES"
+        return "HOLD"
+
+    def _real_rate(nom: float | None, infl: float | None) -> float | None:
+        if nom is None or infl is None: return None
+        return round(nom - infl, 2)
+
+    fed_real  = _real_rate(fed,  core_pce or cpi)
+    ecb_real  = _real_rate(ecb,  hicp)
+    boe_real  = _real_rate(boe,  uk_cpi)
+    boj_real  = _real_rate(boj,  jp_cpi)
+
+    # Fed 5Y history for timeline chart
+    def _series(key: str):
+        e = fred_data.get(key, {})
+        s = e.get("series")
+        return s.dropna() if (s is not None and not s.dropna().empty) else None
+
+    return {
+        "fed": {
+            "rate": fed, "2y": us2y,
+            "implied_move": _implied_move(fed, us2y),
+            "real_rate": fed_real,
+            "stance": _policy_stance(fed_real),
+            "neutral": 2.5,
+            "next_meeting": next_fomc_date(),
+            "series": _series("fed_funds"),
+        },
+        "ecb": {
+            "rate": ecb, "2y": eu2y,
+            "implied_move": _implied_move(ecb, eu2y),
+            "real_rate": ecb_real,
+            "stance": _policy_stance(ecb_real),
+            "neutral": 2.0,
+            "series": _series("ecb_deposit_rate"),
+        },
+        "boe": {
+            "rate": boe, "2y": uk2y,
+            "implied_move": _implied_move(boe, uk2y),
+            "real_rate": boe_real,
+            "stance": _policy_stance(boe_real),
+            "neutral": 2.0,
+            "series": _series("boe_rate"),
+        },
+        "boj": {
+            "rate": boj, "2y": jp2y,
+            "implied_move": _implied_move(boj, jp2y),
+            "real_rate": boj_real,
+            "stance": _policy_stance(boj_real, neutral=-1.0),
+            "neutral": 0.0,
+            "ycc_note": "Ultra-loose → gradual normalisation since 2024. Monitoring 10Y cap.",
+            "series": _series("boj_rate"),
+        },
+    }
+
+
+# ── Module 5: Journal helpers (called from pages/) ────────────────────────────
+
+@st.cache_data(ttl=60 * 2)
+def fetch_price_return_4w(ticker: str, from_date: str) -> float | None:
+    """Fetch 4-week return for a ticker starting from a given date (YYYY-MM-DD)."""
+    try:
+        start  = dt.date.fromisoformat(from_date)
+        end    = start + dt.timedelta(weeks=4)
+        df     = yf.Ticker(ticker).history(start=str(start), end=str(end + dt.timedelta(days=5)))
+        if df is None or df.empty or len(df) < 2:
+            return None
+        first  = float(df["Close"].iloc[0])
+        last   = float(df["Close"].iloc[-1])
+        return round((last / first - 1) * 100, 2) if first > 0 else None
+    except Exception:
+        return None

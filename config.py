@@ -36,6 +36,11 @@ US_FRED_SERIES = {
     "m2_yoy":        ("M2SL",       "M2 Money Supply (YoY %)",           "%", "yoy_pct"),
     "hy_oas":        ("BAMLH0A0HYM2","High Yield Credit Spread (OAS)",   "%"),
     "ig_oas":        ("BAMLC0A0CM", "Investment Grade Credit Spread (OAS)","%"),
+    # Module 1 — Market-implied forward signals
+    "breakeven_5y":  ("T5YIE",     "5-Year Breakeven Inflation",         "%"),
+    "breakeven_5y5y":("T5YIFR",   "5Y5Y Forward Inflation Expectation", "%"),
+    "fwd_rate_2y2y": ("THREEFY2", "2-Year Rate, 2 Years Forward",        "%"),
+    "fwd_rate_3y2y": ("THREEFY3", "2-Year Rate, 3 Years Forward",        "%"),
 }
 
 # ---- Europe / UK FRED series ------------------------------------------------
@@ -57,6 +62,11 @@ EU_FRED_SERIES = {
     "uk_unemployment":  ("LRHUTTTTGBM156S",    "UK Unemployment Rate",               "%"),
     "boe_rate":         ("BOERUKM",            "Bank of England Base Rate",          "%"),
     "uk_cpi_yoy":       ("GBRCPIALLMINMEI",    "UK CPI (YoY %)",                     "%", "yoy_pct"),
+    "uk_2y_yield":      ("IRLTLT02GBM156N",    "UK 2-Year Gilt Yield",               "%"),
+    # Module 4 — Central Bank Tracker (additional banks)
+    "boj_rate":         ("IRSTCI01JPM156N",    "BOJ Short-Term Policy Rate",         "%"),
+    "jp_2y_yield":      ("IRLTLT02JPM156N",    "Japan 2-Year Government Bond Yield", "%"),
+    "jp_cpi_yoy":       ("JPNCPIALLMINMEI",    "Japan CPI (YoY %)",                  "%", "yoy_pct"),
 }
 
 # ---- US Yahoo Finance tickers ------------------------------------------------
