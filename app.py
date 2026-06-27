@@ -2122,40 +2122,30 @@ with tab_markets:
     except Exception:
         eu_bench_ret = None
 
-    def get_price(ticker):
-        try:
-            t = yf.Ticker(ticker)
-            try:
-                p = t.fast_info['last_price']
-                if p and float(p) > 0:
-                    return float(p), None
-            except Exception:
-                pass
-            h = t.history(period='5d')
-            if h.empty:
-                return None, None
-            if isinstance(h.columns, pd.MultiIndex):
-                h.columns = h.columns.get_level_values(0)
-            closes = h['Close'].dropna()
-            if len(closes) < 2:
-                return None, None
-            last = float(closes.iloc[-1])
-            prev = float(closes.iloc[-2])
-            chg = ((last - prev) / prev) * 100
-            return last, chg
-        except Exception:
-            return None, None
-
     def snap_grid(tickers):
         cols = st.columns(len(tickers))
         for i, ticker in enumerate(tickers):
-            label = (market_data.get(ticker) or {}).get("label", ticker)
+            meta  = market_data.get(ticker) or {}
+            label = meta.get("label", ticker)
             with cols[i]:
-                last, chg = get_price(ticker)
-                if last is not None:
-                    chg_s = f"{chg:+.2f}%" if chg is not None else None
+                try:
+                    df = meta.get("df")
+                    if df is None or df.empty:
+                        st.metric(label, "—")
+                        continue
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df = df.copy()
+                        df.columns = df.columns.get_level_values(0)
+                    closes = df["Close"].dropna()
+                    if len(closes) < 2:
+                        st.metric(label, "—")
+                        continue
+                    last = float(closes.values[-1])
+                    prev = float(closes.values[-2])
+                    chg  = ((last - prev) / prev) * 100
+                    chg_s = f"{chg:+.2f}%" if math.isfinite(chg) else None
                     st.metric(label, fmt(last, 2), chg_s)
-                else:
+                except Exception:
                     st.metric(label, "—")
 
     def chart_grid(tickers, ncols=2, color="#2979FF"):
