@@ -242,11 +242,31 @@ def _market_status() -> dict:
     now = dt.datetime.now(ET)
     t   = now.hour * 60 + now.minute
     wd  = now.weekday()
-    if wd >= 5:          return {"label": "CLOSED",      "color": "#2D3E56"}
-    if 570 <= t < 960:   return {"label": "MARKET OPEN", "color": "#00C896"}
-    if 240 <= t < 570:   return {"label": "PRE-MARKET",  "color": "#FFA502"}
-    if 960 <= t < 1200:  return {"label": "AFTER-HOURS", "color": "#1A6EFF"}
-    return {"label": "CLOSED", "color": "#2D3E56"}
+    if wd >= 5:          return {"label": "MARKET CLOSED", "color": "#2D3E56"}
+    if 570 <= t < 960:   return {"label": "MARKET OPEN",   "color": "#00C896"}
+    if 240 <= t < 570:   return {"label": "PRE-MARKET",    "color": "#FFA502"}
+    if 960 <= t < 1200:  return {"label": "AFTER-HOURS",   "color": "#FFA502"}
+    return {"label": "MARKET CLOSED", "color": "#2D3E56"}
+
+
+def is_market_hours() -> bool:
+    """True during regular US equity hours: Mon-Fri 9:30am-4:00pm ET."""
+    ET  = ZoneInfo("America/New_York")
+    now = dt.datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    t = now.hour * 60 + now.minute
+    return 570 <= t < 960   # 9:30=570, 16:00=960
+
+
+def is_extended_hours() -> bool:
+    """True during pre-market (4am-9:30am) or after-hours (4pm-8pm) ET."""
+    ET  = ZoneInfo("America/New_York")
+    now = dt.datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    t = now.hour * 60 + now.minute
+    return (240 <= t < 570) or (960 <= t < 1200)  # 4am-9:30am or 4pm-8pm
 
 
 def _page_header():
@@ -1137,7 +1157,7 @@ if "news_read" not in st.session_state:
     st.session_state.news_read = set()
 
 with tab_news:
-    st_autorefresh(interval=300000, key="news_refresh")
+    st_autorefresh(interval=300000 if is_market_hours() else 600000, key="news_refresh")
     with st.spinner("Fetching news from 52 feeds..."):
         _news = fetch_all_news()
     all_articles = _news["articles"]
@@ -1300,6 +1320,7 @@ with tab_news:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_crypto:
+    # Crypto never closes — always refresh every 10s
     st_autorefresh(interval=10000, key="btc_refresh")
     # ── Data fetch ────────────────────────────────────────────────────────────
     btc_px  = fetch_btc_bybit()
@@ -2134,7 +2155,11 @@ with tab_macro:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_markets:
-    st_autorefresh(interval=30000, key="markets_refresh")
+    if is_market_hours():
+        st_autorefresh(interval=30000, key="markets_refresh")
+    elif is_extended_hours():
+        st_autorefresh(interval=60000, key="markets_refresh")
+    # Outside hours: no auto-refresh
     bench_df     = market_data.get("^GSPC", {}).get("df")
     try:
         bench_ret = bench_df["Close"].squeeze().dropna().pct_change().dropna() if bench_df is not None else None
