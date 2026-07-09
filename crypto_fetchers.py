@@ -25,7 +25,7 @@ _REALIZED_PRICE  = 53_300    # approx on-chain cost basis (update periodically)
 _MVRV_REALIZED   = 52_000    # realized price used for MVRV calculation
 
 
-@st.cache_data(ttl=60 * 1)
+@st.cache_data(ttl=8)
 def fetch_btc_bybit() -> dict:
     """
     Current BTC price from Bybit public API (no key needed). 1-minute cache.

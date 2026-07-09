@@ -43,15 +43,15 @@ def load_all_fred(fred_config: dict, api_key: str, start: str) -> dict:
     return results
 
 
-# ── Yahoo Finance (market prices — 2-minute cache for near-live feel) ─────────
+# ── Yahoo Finance (market prices — 25-second cache for auto-refresh) ──────────
 
-@st.cache_data(ttl=60 * 2)
+@st.cache_data(ttl=25)
 def get_yahoo_history(ticker: str, period: str = "5y") -> pd.DataFrame:
     df = yf.Ticker(ticker).history(period=period)
     return df
 
 
-@st.cache_data(ttl=60 * 2)
+@st.cache_data(ttl=25)
 def load_all_markets(tickers: dict, period: str = "5y") -> dict:
     results = {}
     for ticker, label in tickers.items():

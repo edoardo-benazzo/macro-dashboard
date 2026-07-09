@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from config import (
     FRED_SERIES, MARKET_TICKERS, DEFAULT_LOOKBACK_YEARS,
@@ -1116,6 +1117,7 @@ if "news_read" not in st.session_state:
     st.session_state.news_read = set()
 
 with tab_news:
+    st_autorefresh(interval=300000, key="news_refresh")
     with st.spinner("Fetching news from 52 feeds..."):
         _news = fetch_all_news()
     all_articles = _news["articles"]
@@ -1278,6 +1280,7 @@ with tab_news:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_crypto:
+    st_autorefresh(interval=10000, key="btc_refresh")
     # ── Data fetch ────────────────────────────────────────────────────────────
     btc_px  = fetch_btc_bybit()
     cg      = fetch_btc_coingecko()
@@ -2111,6 +2114,7 @@ with tab_macro:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_markets:
+    st_autorefresh(interval=30000, key="markets_refresh")
     bench_df     = market_data.get("^GSPC", {}).get("df")
     try:
         bench_ret = bench_df["Close"].squeeze().dropna().pct_change().dropna() if bench_df is not None else None
