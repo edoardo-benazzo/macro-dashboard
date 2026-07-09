@@ -96,21 +96,21 @@ st.set_page_config(page_title="Macro Dashboard", layout="wide",
 
 st.markdown("""
 <style>
-/* Prevent darkening flash during rerun/refresh */
-div[data-testid="stAppViewBlockContainer"] {
+/* Kill the rerun overlay completely */
+.stApp [data-testid="stAppViewContainer"] {
     opacity: 1 !important;
+    transition: none !important;
 }
-.stApp > div {
+iframe { opacity: 1 !important; }
+.stSpinner { display: none !important; }
+.stApp { opacity: 1 !important; }
+
+/* Target the actual dimming element */
+div[class*="withScreencast"] > div {
     opacity: 1 !important;
+    transition: none !important;
 }
-/* Hide the running indicator that causes the dim */
-div[data-testid="stStatusWidget"] {
-    display: none !important;
-}
-/* Prevent the overlay that appears during rerun */
-div.element-container iframe {
-    opacity: 1 !important;
-}
+* { transition: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
