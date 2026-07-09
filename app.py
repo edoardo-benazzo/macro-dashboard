@@ -1157,7 +1157,8 @@ if "news_read" not in st.session_state:
     st.session_state.news_read = set()
 
 with tab_news:
-    st_autorefresh(interval=300000 if is_market_hours() else 600000, key="news_refresh")
+    if is_market_hours():
+        st_autorefresh(interval=120000, key="news_refresh")
     with st.spinner("Fetching news from 52 feeds..."):
         _news = fetch_all_news()
     all_articles = _news["articles"]
@@ -1320,8 +1321,7 @@ with tab_news:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_crypto:
-    # Crypto never closes — always refresh every 10s
-    st_autorefresh(interval=10000, key="btc_refresh")
+    st_autorefresh(interval=120000, key="btc_refresh")
     # ── Data fetch ────────────────────────────────────────────────────────────
     btc_px  = fetch_btc_bybit()
     cg      = fetch_btc_coingecko()

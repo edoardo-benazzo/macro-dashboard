@@ -1,6 +1,7 @@
 streamlit>=1.32
 streamlit-autorefresh>=0.1.0
 yfinance>=0.2.40
+pytz>=2024.1
 fredapi>=0.5.2
 pandas>=2.0
 plotly>=5.20
