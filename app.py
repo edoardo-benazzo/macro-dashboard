@@ -2156,10 +2156,7 @@ with tab_macro:
 
 with tab_markets:
     if is_market_hours():
-        st_autorefresh(interval=30000, key="markets_refresh")
-    elif is_extended_hours():
-        st_autorefresh(interval=60000, key="markets_refresh")
-    # Outside hours: no auto-refresh
+        st_autorefresh(interval=120000, key="markets_refresh")
     bench_df     = market_data.get("^GSPC", {}).get("df")
     try:
         bench_ret = bench_df["Close"].squeeze().dropna().pct_change().dropna() if bench_df is not None else None
