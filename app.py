@@ -94,6 +94,26 @@ def _safe_delta(value) -> str | None:
 st.set_page_config(page_title="Macro Dashboard", layout="wide",
                    initial_sidebar_state="collapsed")
 
+st.markdown("""
+<style>
+/* Prevent darkening flash during rerun/refresh */
+div[data-testid="stAppViewBlockContainer"] {
+    opacity: 1 !important;
+}
+.stApp > div {
+    opacity: 1 !important;
+}
+/* Hide the running indicator that causes the dim */
+div[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+/* Prevent the overlay that appears during rerun */
+div.element-container iframe {
+    opacity: 1 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
