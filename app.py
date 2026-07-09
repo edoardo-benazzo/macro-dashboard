@@ -1171,7 +1171,7 @@ with tab_news:
                     st.session_state.news_read.add(article_id(a))
                 st.rerun()
         with f5:
-            if st.button("⟳", key="news_refresh", use_container_width=True,
+            if st.button("⟳", key="news_refresh_btn", use_container_width=True,
                          help="Refresh news"):
                 fetch_all_news.clear(); st.rerun()
 
